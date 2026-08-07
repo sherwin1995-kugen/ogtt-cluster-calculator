@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>OGTT Cluster Calculator  -  St. John's GDM Study</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#F0F4FA;min-height:100vh;padding:16px 12px}
+input[type=number]{-moz-appearance:textfield}
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+@media(max-width:600px){
+  .g2{grid-template-columns:1fr!important}
+  .g3{grid-template-columns:1fr 1fr!important}
+  .g4{grid-template-columns:1fr 1fr!important}
+  .g5{grid-template-columns:1fr 1fr!important}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const SUPABASE_URL = "https://sbiqcybgbvdfylxgycfx.supabase.co";
+const SUPABASE_KEY = "sb_publishable_XfyZdn5a_6iQtiXzfqiQ3A_gHuPoliQ";
+const TABLE        = "ogtt_cases";
+const DATA_PW      = "sjmch2025";
+const CONFIGURED   = !SUPABASE_URL.includes("YOUR_PROJECT");
+
+const {useState,useEffect,useCallback} = React;
+
+async function dbInsert(row) {
+  if (!CONFIGURED) {
+    try {
+      const ex=JSON.parse(localStorage.getItem("ogtt_v4")||"[]");
+      localStorage.setItem("ogtt_v4",JSON.stringify([...ex,row]));
+      return true;
+    } catch(e){return false;}
+  }
+  try {
+    const {created_at,...r}=row;
+    const res=await fetch(SUPABASE_URL+"/rest/v1/"+TABLE,{
+      method:"POST",
+      headers:{"Content-Type":"application/json","apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY,"Prefer":"return=minimal"},
+      body:JSON.stringify(r)
+    });
+    if(!res.ok){const t=await res.text();window._SB_ERR="HTTP "+res.status+": "+t;return false;}
+    return true;
+  } catch(e){window._SB_ERR=e.message;return false;}
+}
+
+async function dbFetch() {
+  if (!CONFIGURED) {
+    try{return JSON.parse(localStorage.getItem("ogtt_v4")||"[]");}catch{return [];}
+  }
+  try {
+    const res=await fetch(SUPABASE_URL+"/rest/v1/"+TABLE+"?select=*&order=created_at.desc&limit=1000",
+      {headers:{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY}});
+    if(!res.ok)return [];
+    return res.json();
+  } catch{return [];}
+}
+
+const NORM={fbs:{mean:82.14,sd:10.47},d1:{mean:54.44,sd:30.97},d2:{mean:32.13,sd:23.98}};
+
+const C={
+  0:{name:"CL",full:"Cluster Low",color:"#5E81A2",bg:"#EBF2F8",fbs_z:-0.661,d1_z:-0.701,d2_z:-0.629,fbs_r:75.2,d1_r:32.7,d2_r:17.0,gdm_pct:38,
+     profile:"Low fasting . Low spike . Low excursion",
+     note:"Highest PIH despite lowest glucose  -  placental insufficiency phenotype",
+     advice:"Monitor BP closely. Serial urine protein. Vascular risk paradoxically highest here.",
+     pred:{all:{HTN:16,PRETERM:9,SGA:9,LGA:7,FD:9,LSCS:29,IND:13,APO:72,MCO:13},
+           gdm:{HTN:19,PRETERM:6,SGA:6,LGA:6,FD:6,LSCS:38,IND:13,APO:75,MCO:13},
+           ng: {HTN:15,PRETERM:10,SGA:10,LGA:7,FD:10,LSCS:25,IND:14,APO:69,MCO:14}}},
+  1:{name:"CS",full:"Cluster Spiker",color:"#D4835A",bg:"#FDF0EB",fbs_z:-0.327,d1_z:0.570,d2_z:0.875,fbs_r:78.7,d1_r:72.1,d2_r:53.1,gdm_pct:31,
+     profile:"Normal fasting . High 1hr spike . Elevated 2hr",
+     note:"LGA risk dominant. First-phase response high but clearance slow.",
+     advice:"Target 1hr postprandial below 140. Serial growth scans for macrosomia.",
+     pred:{all:{HTN:18,PRETERM:10,SGA:8,LGA:11,FD:11,LSCS:38,IND:15,APO:76,MCO:15},
+           gdm:{HTN:17,PRETERM:9,SGA:4,LGA:13,FD:9,LSCS:48,IND:17,APO:78,MCO:17},
+           ng: {HTN:18,PRETERM:10,SGA:10,LGA:9,FD:13,LSCS:28,IND:13,APO:73,MCO:13}}},
+  2:{name:"CF",full:"Cluster Fasting",color:"#6FA36F",bg:"#EEF6EE",fbs_z:0.799,d1_z:-0.238,d2_z:-0.472,fbs_r:90.5,d1_r:47.1,d2_r:20.8,gdm_pct:54,
+     profile:"High fasting . Blunted spike . Low excursion",
+     note:"Paradoxically LOW PIH. Higher SGA. Fasting glucose is the primary target.",
+     advice:"Fasting is the key target. Evening snack, metformin or basal insulin. Watch for SGA.",
+     pred:{all:{HTN:5,PRETERM:7,SGA:13,LGA:5,FD:7,LSCS:46,IND:13,APO:80,MCO:13},
+           gdm:{HTN:3,PRETERM:6,SGA:15,LGA:3,FD:6,LSCS:55,IND:15,APO:85,MCO:18},
+           ng: {HTN:7,PRETERM:7,SGA:11,LGA:7,FD:7,LSCS:36,IND:11,APO:75,MCO:7}}},
+  3:{name:"CFS",full:"Cluster Fasting-Spiker",color:"#A06898",bg:"#F5EEF8",fbs_z:2.014,d1_z:2.045,d2_z:1.220,fbs_r:103.2,d1_r:117.8,d2_r:61.4,gdm_pct:72,
+     profile:"High fasting . Very high spike . High excursion",
+     note:"Highest LGA, preterm, MCO. Lowest SGA. Highest treatment need.",
+     advice:"Most intensive management. High insulin probability. Serial growth scans. Preterm risk.",
+     pred:{all:{HTN:17,PRETERM:22,SGA:6,LGA:28,FD:11,LSCS:61,IND:28,APO:89,MCO:33},
+           gdm:{HTN:15,PRETERM:23,SGA:4,LGA:31,FD:12,LSCS:69,IND:31,APO:92,MCO:38},
+           ng: {HTN:20,PRETERM:20,SGA:10,LGA:20,FD:10,LSCS:40,IND:20,APO:80,MCO:20}}}
+};
+
+const MATERNAL=[
+  {key:"htn",    label:"HTN / PIH",      def:"BP above 140/90 mmHg after 20 weeks, or pre-eclampsia (HTN + proteinuria / organ dysfunction). ISSHP 2018."},
+  {key:"preterm",label:"Preterm Birth",   def:"Delivery before 37 completed weeks of gestation."},
+  {key:"sga",    label:"SGA",            def:"Birth weight below 10th percentile for gestational age and sex (Intergrowth-21st)."},
+  {key:"lga",    label:"LGA",            def:"Birth weight above 90th percentile for gestational age and sex (Intergrowth-21st)."},
+  {key:"fd",     label:"Fetal Distress", def:"Non-reassuring CTG requiring urgent operative delivery."},
+  {key:"lscs",   label:"LSCS",           def:"Lower segment caesarean section  -  any indication. In APO Extended, excluded from APO Strict."},
+  {key:"ind",    label:"Induction",      def:"Pharmacological or mechanical induction of labour. In APO Extended, excluded from APO Strict."},
+];
+
+const NEONATAL=[
+  {key:"apgar_low",          label:"APGAR < 7 at 5 min",  def:"APGAR score below 7 at 5 minutes  -  marker of birth asphyxia or neonatal depression."},
+  {key:"neonatal_resus",     label:"Neonatal Resus",       def:"Active resuscitation beyond routine drying and stimulation (PPV, intubation, chest compressions)."},
+  {key:"neonatal_jaundice",  label:"Neonatal Jaundice",    def:"Jaundice requiring phototherapy or exchange transfusion."},
+  {key:"nicu_admission",     label:"NICU Admission",       def:"Admission to neonatal intensive care unit for any reason."},
+  {key:"neonatal_mortality", label:"Neonatal Mortality",   def:"Death within 28 days of birth."},
+];
+
+const TREATMENTS=[
+  {key:"tx_diet",     label:"Diabetic Diet"},
+  {key:"tx_metformin",label:"Metformin"},
+  {key:"tx_insulin",  label:"Insulin"},
+  {key:"tx_antihtn",  label:"Antihypertensive"},
+  {key:"tx_aspirin",  label:"Aspirin"},
+];
+
+function stdz(v,m,s){return (v-m)/s;}
+function edist(p,c){return Math.sqrt(Math.pow(p.fbs_z-c.fbs_z,2)+Math.pow(p.d1_z-c.d1_z,2)+Math.pow(p.d2_z-c.d2_z,2));}
+
+function App(){
+  // OGTT inputs
+  const [fbs,       setFbs]       = useState("");
+  const [hr1,       setHr1]       = useState("");
+  const [hr2,       setHr2]       = useState("");
+  // Patient info
+  const [studyId,   setStudyId]   = useState("");
+  const [centre,    setCentre]    = useState("");
+  const [isGdm,     setIsGdm]     = useState(null);
+  // Demographics
+  const [age,       setAge]       = useState("");
+  const [bmi,       setBmi]       = useState("");
+  const [parity,    setParity]    = useState("");
+  const [gaOgtt,    setGaOgtt]    = useState("");
+  // Result
+  const [result,    setResult]    = useState(null);
+  // Outcomes
+  const [mOuts,     setMOuts]     = useState({});
+  const [nOuts,     setNOuts]     = useState({});
+  const [neoNa,     setNeoNa]     = useState(false);
+  // Delivery details
+  const [gaDel,     setGaDel]     = useState("");
+  const [bwt,       setBwt]       = useState("");
+  const [babySex,   setBabySex]   = useState(null);
+  // Treatment
+  const [txs,       setTxs]       = useState({});
+  const [otherMeds, setOtherMeds] = useState("");
+  // App state
+  const [cases,     setCases]     = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [saving,    setSaving]    = useState(false);
+  const [saved,     setSaved]     = useState(false);
+  const [err,       setErr]       = useState("");
+  const [saveErr,   setSaveErr]   = useState("");
+  const [tab,       setTab]       = useState("calc");
+  const [pwInput,   setPwInput]   = useState("");
+  const [pwOk,      setPwOk]      = useState(false);
+
+  useEffect(()=>{
+    dbFetch().then(d=>{setCases(d||[]);setLoading(false);});
+  },[]);
+
+  function resetAll(){
+    setResult(null);setFbs("");setHr1("");setHr2("");
+    setStudyId("");setIsGdm(null);
+    setAge("");setBmi("");setParity("");setGaOgtt("");
+    setMOuts({});setNOuts({});setNeoNa(false);
+    setGaDel("");setBwt("");setBabySex(null);
+    setTxs({});setOtherMeds("");
+    setSaved(false);setSaveErr("");setErr("");
+  }
+
+  const assign=useCallback(()=>{
+    const f=parseFloat(fbs),h1=parseFloat(hr1),h2=parseFloat(hr2);
+    if(isNaN(f)||isNaN(h1)||isNaN(h2)){setErr("Enter all three OGTT values.");return;}
+    if(f<40||f>260||h1<50||h1>500||h2<50||h2>500){setErr("Values out of plausible range (mg/dL).");return;}
+    if(isGdm===null){setErr("Select GDM status first.");return;}
+    setErr("");setSaved(false);setSaveErr("");
+    setMOuts({});setNOuts({});setNeoNa(false);setTxs({});setOtherMeds("");
+    setGaDel("");setBwt("");setBabySex(null);
+    const d1=h1-f,d2=h2-f;
+    const pt={fbs_z:stdz(f,NORM.fbs.mean,NORM.fbs.sd),d1_z:stdz(d1,NORM.d1.mean,NORM.d1.sd),d2_z:stdz(d2,NORM.d2.mean,NORM.d2.sd)};
+    const dists=Object.entries(C).map(([cid,cl])=>({cid:parseInt(cid),d:edist(pt,cl)})).sort((a,b)=>a.d-b.d);
+    const conf=((dists[1].d-dists[0].d)/dists[1].d*100).toFixed(0);
+    setResult({cl:C[dists[0].cid],cid:dists[0].cid,d1,d2,dists,conf,pt,f,h1,h2,isGdm});
+  },[fbs,hr1,hr2,isGdm]);
+
+  const saveCase=async()=>{
+    if(!result)return;
+    setSaving(true);setSaveErr("");
+    const apo=MATERNAL.some(o=>mOuts[o.key]===1);
+    const apo_strict=MATERNAL.filter(o=>o.key!=="lscs"&&o.key!=="ind").some(o=>mOuts[o.key]===1);
+    const mco=MATERNAL.filter(o=>mOuts[o.key]===1).length>=2;
+    const apo_neonatal=!neoNa&&NEONATAL.some(o=>nOuts[o.key]===1);
+    const row={
+      pid:          studyId||"anon",
+      centre:       centre||"unspecified",
+      age:          age?parseFloat(age):null,
+      bmi:          bmi?parseFloat(bmi):null,
+      parity:       parity!=""?parseInt(parity):null,
+      ga_ogtt:      gaOgtt?parseFloat(gaOgtt):null,
+      fbs:          result.f,
+      hr1:          result.h1,
+      hr2:          result.h2,
+      d1hr:         parseFloat(result.d1.toFixed(1)),
+      d2hr:         parseFloat(result.d2.toFixed(1)),
+      fbs_z:        parseFloat(result.pt.fbs_z.toFixed(4)),
+      d1_z:         parseFloat(result.pt.d1_z.toFixed(4)),
+      d2_z:         parseFloat(result.pt.d2_z.toFixed(4)),
+      cluster:      result.cl.name,
+      cid:          result.cid,
+      dist:         parseFloat(result.dists[0].d.toFixed(4)),
+      conf:         parseInt(result.conf),
+      is_gdm:       result.isGdm,
+      has_outcomes: Object.keys(mOuts).length>0,
+      apo, apo_strict, mco,
+      ga_delivery:  gaDel?parseFloat(gaDel):null,
+      birth_weight: bwt?parseInt(bwt):null,
+      baby_sex:     babySex||null,
+      apo_neonatal,
+      neonatal_na:  neoNa,
+      other_meds:   otherMeds||null,
+      ...Object.fromEntries(MATERNAL.map(o=>[o.key,mOuts[o.key]===1||false])),
+      ...Object.fromEntries(TREATMENTS.map(t=>[t.key,result.isGdm?!!txs[t.key]:false])),
+      ...Object.fromEntries(NEONATAL.map(o=>[o.key,!neoNa&&nOuts[o.key]===1||false])),
+      created_at:   new Date().toISOString()
+    };
+    const ok=await dbInsert(row);
+    if(ok){setCases(p=>[row,...p]);setSaved(true);}
+    else setSaveErr("Save failed: "+(window._SB_ERR||"Check console for details"));
+    setSaving(false);
+  };
+
+  const d1v=(fbs&&hr1&&!isNaN(+fbs))?(+hr1-+fbs).toFixed(1):" - ";
+  const d2v=(fbs&&hr2&&!isNaN(+fbs))?(+hr2-+fbs).toFixed(1):" - ";
+  const d12=(d1v!==" - "&&d2v!==" - "&&+d2v!==0)?(+d1v/+d2v).toFixed(2):" - ";
+
+  const card  ={background:"#fff",borderRadius:12,padding:"16px 18px",boxShadow:"0 1px 6px rgba(0,0,0,0.08)",marginBottom:14};
+  const inp   ={width:"100%",padding:"10px 11px",border:"1.5px solid #C5D5EA",borderRadius:7,fontSize:15,fontWeight:700,color:"#1F3864",background:"#F4F8FF",outline:"none",boxSizing:"border-box"};
+  const lbl   ={fontSize:11,fontWeight:600,color:"#555",marginBottom:5,display:"block"};
+  const btn   =(col,sm,dis)=>({padding:sm?"8px 14px":"11px 0",background:dis?"#bbb":col||"#1F3864",color:"#fff",border:"none",borderRadius:8,fontSize:sm?12:14,fontWeight:700,cursor:dis?"not-allowed":"pointer",width:sm?"auto":"100%"});
+  const tog   =(active,col)=>({padding:"9px 10px",border:"2px solid "+(active?col:"#ddd"),borderRadius:8,background:active?col+"22":"#fafafa",color:active?col:"#aaa",fontWeight:700,fontSize:12,cursor:"pointer",textAlign:"center",transition:"all 0.12s"});
+  const tabS  =(a)=>({padding:"9px 14px",border:"none",borderRadius:8,fontWeight:700,fontSize:13,cursor:"pointer",background:a?"#1F3864":"#E2E8F4",color:a?"#fff":"#555"});
+  const secHdr=(t,sub)=>(
+    <div style={{marginBottom:12}}>
+      <div style={{fontWeight:700,color:"#1F3864",fontSize:13}}>{t}</div>
+      {sub&&<div style={{fontSize:10,color:"#888",marginTop:2}}>{sub}</div>}
+    </div>
+  );
+
+  return(
+    <div style={{maxWidth:820,margin:"0 auto"}}>
+
+      <div style={{background:"#1F3864",borderRadius:12,padding:"15px 18px",marginBottom:14}}>
+        <div style={{color:"#fff",fontSize:18,fontWeight:800}}>OGTT Cluster Calculator</div>
+        <div style={{color:"#B0C8F0",fontSize:11,marginTop:4}}>
+          St. Johns Medical College Hospital . GDM Phenotyping Study . n=245 .{" "}
+          {CONFIGURED
+            ?<span style={{color:"#90EE90"}}>Connected . {loading?"...":cases.length} cases</span>
+            :<span style={{color:"#FFD700"}}>Local mode</span>}
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+        {[["calc","Assign"],["validate","Validate"],["data","Data"],["ref","Reference"]].map(([id,lb])=>(
+          <button key={id} style={tabS(tab===id)} onClick={()=>setTab(id)}>{lb}</button>
+        ))}
+      </div>
+
+      {tab==="calc"&&(
+        <div>
+          <div style={card}>
+            {secHdr("Patient Details")}
+            <div className="g2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+              <div>
+                <label style={lbl}>Centre / Hospital</label>
+                <input value={centre} onChange={e=>setCentre(e.target.value)} placeholder="e.g. St. Johns" style={inp}/>
+              </div>
+              <div>
+                <label style={lbl}>Study ID</label>
+                <input value={studyId} onChange={e=>setStudyId(e.target.value)} placeholder="e.g. SJMCH-001" style={inp}/>
+              </div>
+            </div>
+
+            {secHdr("Patient Demographics","From antenatal card  -  all optional")}
+            <div className="g4" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:14}}>
+              {[["Age (years)",age,setAge,"e.g. 28"],["BMI kg/m2",bmi,setBmi,"e.g. 24.5"],["Parity (prev deliveries)",parity,setParity,"0 / 1 / 2"],["GA at OGTT (weeks)",gaOgtt,setGaOgtt,"e.g. 24"]].map(([lb,v,s,ph])=>(
+                <div key={lb}>
+                  <label style={lbl}>{lb}</label>
+                  <input value={v} onChange={e=>s(e.target.value)} placeholder={ph} type="number" style={inp}/>
+                </div>
+              ))}
+            </div>
+
+            {secHdr("GDM Status *")}
+            <div className="g2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+              {[[true,"GDM Diagnosed","#D4835A"],[false,"Non-GDM (below IADPSG)","#5E81A2"]].map(([v,lb,col])=>(
+                <button key={String(v)} style={tog(isGdm===v,col)} onClick={()=>setIsGdm(v)}>{isGdm===v?"? ":""}{lb}</button>
+              ))}
+            </div>
+
+            {secHdr("75g OGTT Values (mg/dL)")}
+            <div className="g3" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:10}}>
+              {[["FBS",fbs,setFbs,"85"],["1hr",hr1,setHr1,"148"],["2hr",hr2,setHr2,"130"]].map(([lb,v,s,ph])=>(
+                <div key={lb}>
+                  <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:4}}>{lb} glucose</div>
+                  <input value={v} onChange={e=>s(e.target.value)} placeholder={ph} type="number" style={inp}/>
+                </div>
+              ))}
+            </div>
+
+            <div className="g3" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+              {[["Delta 1hr",d1v],["Delta 2hr",d2v],["D1:D2 ratio",d12]].map(([lb,v])=>(
+                <div key={lb} style={{background:"#EBF2F8",borderRadius:7,padding:"8px 10px"}}>
+                  <div style={{fontSize:10,fontWeight:600,color:"#555"}}>{lb}</div>
+                  <div style={{fontSize:16,fontWeight:800,color:"#1F3864"}}>{v}</div>
+                </div>
+              ))}
+            </div>
+
+            {err&&<div style={{color:"#B00020",fontSize:12,marginBottom:10,padding:"8px 12px",background:"#FFF0F0",borderRadius:6}}>{err}</div>}
+            <button onClick={assign} style={btn()}>Assign to Cluster</button>
+          </div>
+
+          {result&&(()=>{
+            const {cl,cid,d1,d2,dists,conf,f,h1,h2,isGdm:gdm}=result;
+            const pred=gdm?cl.pred.gdm:cl.pred.ng;
+            return(
+              <div>
+                <div style={{background:cl.color,borderRadius:12,padding:"16px 18px",marginBottom:12,color:"#fff"}}>
+                  <div style={{fontSize:11,opacity:0.8}}>{gdm?"GDM":"Non-GDM"} Patient  -  Assigned to</div>
+                  <div style={{fontSize:24,fontWeight:900}}>{cl.name}  -  {cl.full}</div>
+                  <div style={{fontSize:12,opacity:0.85,marginTop:4}}>{cl.profile}</div>
+                  <div style={{fontSize:11,opacity:0.7,marginTop:3}}>Distance: {dists[0].d.toFixed(3)} . Confidence: {conf}% margin</div>
+                </div>
+
+                <div style={card}>
+                  <div style={{fontWeight:700,color:"#1F3864",fontSize:13,marginBottom:8}}>Distance to All Centroids</div>
+                  {dists.map(({cid:c2,d},i)=>{
+                    const CC=C[c2];const maxD=dists[dists.length-1].d;
+                    return(
+                      <div key={c2} style={{marginBottom:8}}>
+                        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:2}}>
+                          <span style={{fontWeight:i===0?700:400,color:i===0?CC.color:"#666"}}>{i===0?"? ":""}{CC.name}  -  {CC.full}</span>
+                          <span style={{fontWeight:700,color:i===0?CC.color:"#aaa"}}>{d.toFixed(3)}</span>
+                        </div>
+                        <div style={{height:5,background:"#EEE",borderRadius:3}}>
+                          <div style={{width:Math.max(3,(1-d/maxD)*100)+"%",height:"100%",background:i===0?CC.color:"#ccc",borderRadius:3}}/>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div style={card}>
+                  <div style={{fontWeight:700,color:"#1F3864",fontSize:13}}>Predicted Outcome Rates  -  {gdm?"GDM":"Non-GDM"} subgroup of {cl.name}</div>
+                  <div style={{fontSize:11,color:"#888",margin:"4px 0 12px"}}>From St. Johns training cohort . Raw rates (not treatment-adjusted)</div>
+                  <div className="g4" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+                    {[...MATERNAL,{key:"APO",label:"APO Ext"},{key:"APO_STRICT",label:"APO Strict"},{key:"MCO",label:"MCO"}].map(({key,label})=>{
+                      const pct=pred[key.toUpperCase()]||pred[key]||0;
+                      const col=pct>40?"#B83232":pct>20?"#C07000":"#2E7D32";
+                      return(
+                        <div key={key} style={{background:"#FAFAFA",borderRadius:7,padding:"8px 9px",borderLeft:"3px solid "+col}}>
+                          <div style={{fontSize:10,color:"#555",fontWeight:600}}>{label}</div>
+                          <div style={{fontSize:17,fontWeight:800,color:col}}>{pct}%</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div style={{...card,background:cl.bg,border:"1.5px solid "+cl.color}}>
+                  <div style={{fontWeight:800,color:cl.color,fontSize:13,marginBottom:6}}>{cl.name}  -  Clinical Guidance</div>
+                  <div style={{fontSize:13,color:"#333",marginBottom:4,lineHeight:1.6}}>{cl.note}</div>
+                  <div style={{fontSize:13,color:"#555",lineHeight:1.6,fontStyle:"italic"}}>{cl.advice}</div>
+                </div>
+
+                <div style={card}>
+                  {secHdr("Record for Validation Database","Enter after delivery  -  all fields optional")}
+
+                  <div style={{fontSize:10,color:"#888",marginBottom:8}}>APO Extended = any of 7 . APO Strict = excludes LSCS and Induction . MCO = any 2 or more of all 7</div>
+                  <div className="g2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+                    {MATERNAL.map(({key,label,def})=>(
+                      <div key={key} style={{marginBottom:4}}>
+                        <button style={{...tog(mOuts[key]===1,cl.color),width:"100%",marginBottom:3}} onClick={()=>setMOuts(p=>({...p,[key]:p[key]===1?0:1}))}>
+                          {mOuts[key]===1?"? ":""}{label}
+                        </button>
+                        <div style={{fontSize:10,color:"#777",lineHeight:1.4}}>{def}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {Object.keys(mOuts).length>0&&(()=>{
+                    const apo=MATERNAL.some(o=>mOuts[o.key]===1);
+                    const aps=MATERNAL.filter(o=>o.key!=="lscs"&&o.key!=="ind").some(o=>mOuts[o.key]===1);
+                    const mco2=MATERNAL.filter(o=>mOuts[o.key]===1).length>=2;
+                    return(
+                      <div className="g3" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                        {[["APO Extended",apo,"#1F3864"],["APO Strict",aps,"#2E75B6"],["MCO (2 or more)",mco2,"#B83232"]].map(([lb,v,col])=>(
+                          <div key={lb} style={{background:v?"#FFF0F0":"#F0FFF0",borderRadius:7,padding:"8px 10px",border:"1.5px solid "+(v?col:"#ccc")}}>
+                            <div style={{fontSize:10,fontWeight:600,color:"#555"}}>{lb}</div>
+                            <div style={{fontSize:14,fontWeight:800,color:v?col:"#2E7D32"}}>{v?"YES":"NO"}</div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
+                  {isGdm&&(
+                    <div style={{marginBottom:14}}>
+                      <label style={{...lbl,marginTop:4}}>
+                        Treatment Received <span style={{color:"#2E7D32",fontWeight:400}}>(GDM patients only)</span>
+                      </label>
+                      <div className="g5" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:10}}>
+                        {TREATMENTS.map(({key,label})=>(
+                          <button key={key} style={tog(!!txs[key],"#2E7D32")} onClick={()=>setTxs(p=>({...p,[key]:!p[key]}))}>
+                            {txs[key]?"? ":""}{label}
+                          </button>
+                        ))}
+                      </div>
+                      <label style={lbl}>Other Medications (free text)</label>
+                      <input value={otherMeds} onChange={e=>setOtherMeds(e.target.value)} placeholder="" style={{...inp,fontSize:13,fontWeight:400}}/>
+                    </div>
+                  )}
+
+                  <div style={{borderTop:"1.5px solid #EEE",paddingTop:14,marginTop:4}}>
+                    {secHdr("Delivery and Birth Details")}
+                    <div className="g3" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:14}}>
+                      <div>
+                        <label style={lbl}>GA at delivery (weeks)</label>
+                        <input value={gaDel} onChange={e=>setGaDel(e.target.value)} placeholder="e.g. 38" type="number" style={inp}/>
+                      </div>
+                      <div>
+                        <label style={lbl}>Birth weight (grams)</label>
+                        <input value={bwt} onChange={e=>setBwt(e.target.value)} placeholder="e.g. 3100" type="number" style={inp}/>
+                      </div>
+                      <div>
+                        <label style={lbl}>Baby sex</label>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:4}}>
+                          {[["M","Male"],["F","Female"]].map(([v,lb])=>(
+                            <button key={v} style={tog(babySex===v,"#5E81A2")} onClick={()=>setBabySex(v)}>
+                              {babySex===v?"? ":""}{lb}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {secHdr("Neonatal Outcomes")}
+                    <div style={{fontSize:10,color:"#888",marginBottom:8}}>Leave blank if not yet delivered</div>
+                    <button style={{...tog(neoNa,"#888"),width:"100%",marginBottom:12}} onClick={()=>setNeoNa(p=>!p)}>
+                      {neoNa?"? ":""}Not Available / Data Not Yet Collected
+                    </button>
+                    {!neoNa&&(
+                      <div className="g2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+                        {NEONATAL.map(({key,label,def})=>(
+                          <div key={key} style={{marginBottom:4}}>
+                            <button style={{...tog(nOuts[key]===1,"#E09B5A"),width:"100%",marginBottom:3}} onClick={()=>setNOuts(p=>({...p,[key]:p[key]===1?0:1}))}>
+                              {nOuts[key]===1?"? ":""}{label}
+                            </button>
+                            <div style={{fontSize:10,color:"#777",lineHeight:1.4}}>{def}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {!neoNa&&Object.keys(nOuts).length>0&&(
+                      <div style={{background:NEONATAL.some(o=>nOuts[o.key]===1)?"#FFF3E8":"#F0FFF0",borderRadius:7,padding:"8px 10px",marginBottom:10,border:"1.5px solid "+(NEONATAL.some(o=>nOuts[o.key]===1)?"#E09B5A":"#ccc")}}>
+                        <div style={{fontSize:10,fontWeight:600,color:"#555"}}>APO Neonatal (any 1 of 5)</div>
+                        <div style={{fontSize:14,fontWeight:800,color:NEONATAL.some(o=>nOuts[o.key]===1)?"#E09B5A":"#2E7D32"}}>
+                          {NEONATAL.some(o=>nOuts[o.key]===1)?"YES":"NO"}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {saveErr&&<div style={{color:"#B00020",fontSize:12,marginBottom:8,padding:"7px 10px",background:"#FFF0F0",borderRadius:6}}>{saveErr}</div>}
+                  <div style={{display:"flex",gap:10}}>
+                    <button onClick={saveCase} disabled={saving||saved} style={{...btn(saved?"#2E7D32":"#1F3864",false,saving||saved),flex:1}}>
+                      {saving?"Saving...":saved?"Saved to Database":"Save to Validation Database"}
+                    </button>
+                    <button onClick={resetAll} style={btn("#888",true,false)}>New Patient</button>
+                  </div>
+                  {saved&&<div style={{color:"#2E7D32",fontSize:12,marginTop:8,textAlign:"center"}}>Case saved . {cases.length} total cases</div>}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {tab==="validate"&&(
+        <div>
+          <div style={card}>
+            <div style={{fontWeight:700,color:"#1F3864",fontSize:14,marginBottom:12}}>Validation Summary</div>
+            <div className="g4" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+              {[["Total",cases.length,"#1F3864"],["With outcomes",cases.filter(c=>c.has_outcomes).length,"#2E7D32"],["GDM",cases.filter(c=>c.is_gdm===true).length,"#D4835A"],["Non-GDM",cases.filter(c=>c.is_gdm===false).length,"#5E81A2"]].map(([lb,v,col])=>(
+                <div key={lb} style={{background:"#F8F8F8",borderRadius:8,padding:"10px 12px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:"#888",fontWeight:600}}>{lb}</div>
+                  <div style={{fontSize:22,fontWeight:800,color:col}}>{v}</div>
+                </div>
+              ))}
+            </div>
+            {(()=>{const cx=[...new Set(cases.map(c=>c.centre).filter(Boolean))];return cx.length>0&&<div style={{marginTop:10,fontSize:12,color:"#555"}}><b>Centres:</b> {cx.join(" . ")}</div>;})()}
+          </div>
+          {cases.filter(c=>c.has_outcomes).length===0?(
+            <div style={{...card,textAlign:"center",padding:"32px",color:"#aaa"}}>
+              <div style={{fontSize:30,marginBottom:8}}>?</div>
+              <div style={{fontWeight:700,fontSize:14,color:"#666"}}>No outcome data yet</div>
+              <div style={{fontSize:12,marginTop:6}}>Save cases with outcomes in the Assign tab</div>
+            </div>
+          ):(
+            [0,1,2,3].map(cid=>{
+              const CL=C[cid];
+              const pts=cases.filter(c=>c.has_outcomes&&c.cid===cid);
+              if(!pts.length)return <div key={cid} style={{...card,borderLeft:"4px solid "+CL.color,opacity:0.5}}><span style={{fontWeight:700,color:CL.color}}>{CL.name}</span><span style={{fontSize:12,color:"#aaa",marginLeft:8}}>No cases yet</span></div>;
+              return(
+                <div key={cid} style={{...card,borderLeft:"4px solid "+CL.color}}>
+                  <div style={{fontWeight:700,color:CL.color,fontSize:14,marginBottom:4}}>{CL.name}  -  {CL.full}</div>
+                  <div style={{fontSize:12,color:"#888",marginBottom:12}}>n={pts.length} validated</div>
+                  <div className="g4" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+                    {[...MATERNAL,{key:"apo",label:"APO Ext"}].map(({key,label})=>{
+                      const k=key.toLowerCase();
+                      const pred=CL.pred.all[key.toUpperCase()]||CL.pred.all[key]||0;
+                      const act=pts.filter(p=>p[k]===true||p[k]===1).length/pts.length*100;
+                      const diff=Math.abs(act-pred);
+                      const col=diff<10?"#2E7D32":diff<20?"#C07000":"#B83232";
+                      return(
+                        <div key={key} style={{background:"#FAFAFA",borderRadius:7,padding:"8px 9px"}}>
+                          <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                            <span style={{fontSize:10,fontWeight:600,color:"#555"}}>{label}</span>
+                            <span style={{fontSize:10,fontWeight:700,color:col}}>{diff<10?"?":diff<20?"?":"?"}</span>
+                          </div>
+                          <div style={{fontSize:11,color:"#888"}}>Pred: <b style={{color:"#5E81A2"}}>{pred}%</b></div>
+                          <div style={{height:4,background:"#EEE",borderRadius:3,margin:"3px 0"}}>
+                            <div style={{width:Math.min(100,act)+"%",height:"100%",background:col,borderRadius:3}}/>
+                          </div>
+                          <div style={{fontSize:11,color:"#888"}}>Actual: <b style={{color:col}}>{act.toFixed(0)}%</b></div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {tab==="data"&&(
+        <div>
+          {!pwOk?(
+            <div style={{...card,textAlign:"center",padding:"40px 20px"}}>
+              <div style={{fontSize:36,marginBottom:12}}>?</div>
+              <div style={{fontWeight:700,color:"#1F3864",fontSize:16,marginBottom:6}}>Data Access  -  Password Required</div>
+              <div style={{fontSize:12,color:"#888",marginBottom:16}}>Restricted to authorised researchers only</div>
+              <input type="password" value={pwInput} onChange={e=>setPwInput(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&(pwInput===DATA_PW?setPwOk(true):alert("Incorrect password"))}
+                placeholder="Enter password" style={{...inp,maxWidth:240,margin:"0 auto 12px",display:"block",textAlign:"center"}}/>
+              <button onClick={()=>pwInput===DATA_PW?setPwOk(true):alert("Incorrect password")} style={{...btn(),display:"inline-block",minWidth:160}}>Unlock</button>
+            </div>
+          ):(
+            <div style={card}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+                <div style={{fontWeight:700,color:"#1F3864",fontSize:14}}>
+                  All Cases (n={cases.length})
+                  <button onClick={()=>{setPwOk(false);setPwInput("");}} style={{marginLeft:10,padding:"2px 8px",background:"#eee",border:"none",borderRadius:5,fontSize:11,cursor:"pointer",color:"#888"}}>Lock</button>
+                </div>
+                <button onClick={()=>{
+                  const hdrs=["#","centre","study_id","date","age","bmi","parity","ga_ogtt","fbs","hr1","hr2","d1hr","d2hr","cluster","gdm","conf",...MATERNAL.map(o=>o.key),"apo","apo_strict","mco","ga_delivery","birth_weight","baby_sex",...TREATMENTS.map(t=>t.key),"other_meds",...NEONATAL.map(o=>o.key),"neonatal_na","apo_neonatal"];
+                  const rows=cases.map((c,i)=>[i+1,c.centre,c.pid,c.created_at?c.created_at.slice(0,10):"",c.age||"",c.bmi||"",c.parity!=null?c.parity:"",c.ga_ogtt||"",c.fbs,c.hr1,c.hr2,c.d1hr,c.d2hr,c.cluster,c.is_gdm?"GDM":"Non-GDM",c.conf,...MATERNAL.map(o=>c[o.key]===true?"1":"0"),c.apo?"1":"0",c.apo_strict?"1":"0",c.mco?"1":"0",c.ga_delivery||"",c.birth_weight||"",c.baby_sex||"",...TREATMENTS.map(t=>c[t.key]===true?"1":"0"),c.other_meds||"",...NEONATAL.map(o=>c[o.key]===true?"1":"0"),c.neonatal_na?"1":"0",c.apo_neonatal?"1":"0"]);
+                  const csv=[hdrs,...rows].map(r=>r.join(",")).join("\n");
+                  const a=document.createElement("a");
+                  a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+                  a.download="ogtt_cases_"+new Date().toISOString().slice(0,10)+".csv";
+                  a.click();
+                }} style={btn("#2E7D32",true,false)}>Export CSV</button>
+              </div>
+              {cases.length===0?(
+                <div style={{textAlign:"center",padding:24,color:"#aaa",fontSize:13}}>No cases yet.</div>
+              ):(
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                    <thead>
+                      <tr style={{background:"#1F3864"}}>
+                        {["#","Centre","Study ID","Date","Age","BMI","Parity","GA OGTT","Cluster","GDM","Conf","Outcomes","GA Del","BWT","Sex","Neonatal","Tx"].map(h=>(
+                          <th key={h} style={{padding:"7px 8px",color:"#fff",textAlign:"left",whiteSpace:"nowrap"}}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cases.map((c,i)=>{
+                        const CL=C[c.cid];
+                        const matL=MATERNAL.filter(o=>c[o.key]===true).map(o=>o.label);
+                        const neoL=NEONATAL.filter(o=>c[o.key]===true).map(o=>o.label);
+                        const txL=TREATMENTS.filter(t=>c[t.key]===true).map(t=>t.label);
+                        return(
+                          <tr key={i} style={{background:i%2===0?"#FAFAFA":"#fff"}}>
+                            <td style={{padding:"5px 8px",color:"#aaa"}}>{i+1}</td>
+                            <td style={{padding:"5px 8px",fontWeight:600}}>{c.centre||" - "}</td>
+                            <td style={{padding:"5px 8px"}}>{c.pid||" - "}</td>
+                            <td style={{padding:"5px 8px",color:"#888"}}>{c.created_at?c.created_at.slice(0,10):" - "}</td>
+                            <td style={{padding:"5px 8px"}}>{c.age||" - "}</td>
+                            <td style={{padding:"5px 8px"}}>{c.bmi||" - "}</td>
+                            <td style={{padding:"5px 8px"}}>{c.parity!=null?c.parity:" - "}</td>
+                            <td style={{padding:"5px 8px"}}>{c.ga_ogtt||" - "}</td>
+                            <td style={{padding:"5px 8px",fontWeight:700,color:CL?CL.color:"#333"}}>{c.cluster}</td>
+                            <td style={{padding:"5px 8px",color:c.is_gdm?"#D4835A":"#5E81A2",fontWeight:600}}>{c.is_gdm===true?"GDM":c.is_gdm===false?"Non-GDM":" - "}</td>
+                            <td style={{padding:"5px 8px"}}>{c.conf}%</td>
+                            <td style={{padding:"5px 8px",color:matL.length?"#B83232":"#aaa",fontStyle:matL.length?"normal":"italic"}}>{matL.length?matL.join(", "):"pending"}</td>
+                            <td style={{padding:"5px 8px"}}>{c.ga_delivery||" - "}</td>
+                            <td style={{padding:"5px 8px"}}>{c.birth_weight||" - "}</td>
+                            <td style={{padding:"5px 8px"}}>{c.baby_sex||" - "}</td>
+                            <td style={{padding:"5px 8px",color:"#E09B5A",fontSize:11}}>{c.neonatal_na?"N/A":neoL.length?neoL.join(", "):" - "}</td>
+                            <td style={{padding:"5px 8px",color:"#2E7D32",fontSize:11}}>{txL.length?txL.join(", "):" - "}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab==="ref"&&(
+        <div>
+          <div style={card}>
+            <div style={{fontWeight:700,color:"#1F3864",fontSize:14,marginBottom:14}}>Cluster Reference</div>
+            {[0,1,2,3].map(cid=>{
+              const CL=C[cid];
+              return(
+                <div key={cid} style={{marginBottom:16,borderLeft:"4px solid "+CL.color,paddingLeft:12}}>
+                  <div style={{fontWeight:800,color:CL.color,fontSize:15}}>{CL.name}  -  {CL.full}</div>
+                  <div style={{fontSize:12,color:"#555",margin:"4px 0"}}>{CL.profile}</div>
+                  <div className="g3" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:8}}>
+                    {[["FBS centroid",CL.fbs_r+" mg/dL"],["D1hr centroid",CL.d1_r+" mg/dL"],["D2hr centroid",CL.d2_r+" mg/dL"]].map(([lb,v])=>(
+                      <div key={lb} style={{background:CL.bg,borderRadius:7,padding:"7px 9px"}}>
+                        <div style={{fontSize:10,color:"#555",fontWeight:600}}>{lb}</div>
+                        <div style={{fontSize:14,fontWeight:800,color:CL.color}}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{...card,background:"#EBF2F8"}}>
+            <div style={{fontWeight:700,color:"#1F3864",fontSize:13,marginBottom:8}}>Assignment Method</div>
+            <div style={{fontSize:12,color:"#444",lineHeight:1.9}}>
+              <b>Step 1:</b> Delta1hr = 1hr minus FBS, Delta2hr = 2hr minus FBS<br/>
+              <b>Step 2:</b> Standardise  -  FBS_z=(FBS-82.14)/10.47, D1_z=(D1hr-54.44)/30.97, D2_z=(D2hr-32.13)/23.98<br/>
+              <b>Step 3:</b> Euclidean distance to each of 4 centroids in standardised space<br/>
+              <b>Step 4:</b> Assign to nearest centroid<br/><br/>
+              <b>Training cohort:</b> n=245 (GDM=59, Non-GDM=186), St. Johns Medical College Hospital, Bengaluru<br/>
+              <b>Algorithm:</b> k-means (k=4, 100 initialisations, seed=42)<br/>
+              <b>Features:</b> FBS + Delta1hr + Delta2hr (orthogonal glycaemic kinetic inputs)
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{textAlign:"center",fontSize:10,color:"#aaa",padding:"10px 0"}}>
+        St. Johns Medical College Hospital . Endocrinology . GDM Phenotyping Study . Research use only
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
