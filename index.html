@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>OGTT Cluster Calculator - St Johns GDM Study</title>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#F0F4FA;min-height:100vh;padding:16px 12px}
+input[type=number]{-moz-appearance:textfield}
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+button,textarea{font-family:inherit}
+@media(max-width:600px){
+  .g2{grid-template-columns:1fr!important}
+  .g3{grid-template-columns:1fr 1fr!important}
+  .g4{grid-template-columns:1fr 1fr!important}
+  .g5{grid-template-columns:1fr 1fr!important}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+var SUPABASE_URL = "https://sbiqcybgbvdfylxgycfx.supabase.co";
+var SUPABASE_KEY = "sb_publishable_XfyZdn5a_6iQtiXzfqiQ3A_gHuPoliQ";
+var TABLE   = "ogtt_cases";
+var DATA_PW = "sjmch2025";
+var CONFIGURED = SUPABASE_URL.indexOf("YOUR_PROJECT") === -1;
+
+var h = React.createElement;
+var useState = React.useState, useEffect = React.useEffect;
+
+function dbInsert(row){
+  if(!CONFIGURED){
+    try{
+      var ex = JSON.parse(localStorage.getItem("ogtt_v4") || "[]");
+      var wi = Object.assign({}, row, {_lid: Date.now()});
+      ex.push(wi);
+      localStorage.setItem("ogtt_v4", JSON.stringify(ex));
+      return Promise.resolve(wi);
+    }catch(e){ return Promise.resolve(null); }
+  }
+  var r = Object.assign({}, row);
+  delete r.created_at;
+
+  function post(preferMode){
+    return fetch(SUPABASE_URL + "/rest/v1/" + TABLE, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY,
+        "Prefer": "return=" + preferMode
+      },
+      body: JSON.stringify(r)
+    });
+  }
+
+  // Try asking for the saved row back so Undo can work.
+  // If the database only allows inserting (not reading), retry without it.
+  return post("representation").then(function(res){
+    if(res.ok){
+      return res.json().then(function(d){
+        return (d && d[0]) ? d[0] : Object.assign({}, row, {_noUndo:true});
+      }).catch(function(){
+        return Object.assign({}, row, {_noUndo:true});
+      });
+    }
+    if(res.status === 401 || res.status === 403 || res.status === 406){
+      return post("minimal").then(function(res2){
+        if(res2.ok){
+          return Object.assign({}, row, {_noUndo:true});
+        }
+        return res2.text().then(function(t2){
+          window._SB_ERR = "HTTP " + res2.status + ": " + t2;
+          return null;
+        });
+      });
+    }
+    return res.text().then(function(t){
+      window._SB_ERR = "HTTP " + res.status + ": " + t;
+      return null;
+    });
+  }).catch(function(e){
+    window._SB_ERR = e.message;
+    return null;
+  });
+}
+
+function dbDelete(id){
+  if(!CONFIGURED){
+    try{
+      var ex = JSON.parse(localStorage.getItem("ogtt_v4") || "[]");
+      ex = ex.filter(function(x){ return x._lid !== id; });
+      localStorage.setItem("ogtt_v4", JSON.stringify(ex));
+      return Promise.resolve(true);
+    }catch(e){ return Promise.resolve(false); }
+  }
+  return fetch(SUPABASE_URL + "/rest/v1/" + TABLE + "?id=eq." + id, {
+    method: "DELETE",
+    headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY }
+  }).then(function(res){
+    if(!res.ok){
+      return res.text().then(function(t){
+        window._SB_ERR = "HTTP " + res.status + ": " + t;
+        return false;
+      });
+    }
+    return true;
+  }).catch(function(e){
+    window._SB_ERR = e.message;
+    return false;
+  });
+}
+
+function dbFetch(){
+  if(!CONFIGURED){
+    try{
+      var d = JSON.parse(localStorage.getItem("ogtt_v4") || "[]");
+      return Promise.resolve(Array.isArray(d) ? d : []);
+    }catch(e){ return Promise.resolve([]); }
+  }
+  return fetch(SUPABASE_URL + "/rest/v1/" + TABLE + "?select=*&order=created_at.desc&limit=1000", {
+    headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY }
+  }).then(function(res){
+    if(!res.ok){
+      return res.text().then(function(t){
+        window._READ_ERR = "HTTP " + res.status + ": " + t;
+        return [];
+      });
+    }
+    return res.json().then(function(d){
+      if(!Array.isArray(d)){
+        window._READ_ERR = "Read blocked by database policy.";
+        return [];
+      }
+      return d;
+    });
+  }).catch(function(e){
+    window._READ_ERR = e.message;
+    return [];
+  });
+}
+
+var NORM = {
+  fbs: {mean: 82.14, sd: 10.47},
+  d1:  {mean: 54.44, sd: 30.97},
+  d2:  {mean: 32.13, sd: 23.98}
+};
+
+var C = {
+  0: { name:"CL", full:"Cluster Low", color:"#5E81A2", bg:"#EBF2F8",
+       fbs_z:-0.661, d1_z:-0.701, d2_z:-0.629, fbs_r:75.2, d1_r:32.7, d2_r:17.0,
+       profile:"Low fasting, low spike, low excursion",
+       note:"Highest PIH despite lowest glucose. Placental insufficiency phenotype.",
+       advice:"Monitor BP closely. Serial urine protein. Vascular risk paradoxically highest here.",
+       pred:{ all:{htn:16,preterm:9,sga:9,lga:7,fd:9,lscs:29,ind:13,apo:72,mco:13},
+              gdm:{htn:19,preterm:6,sga:6,lga:6,fd:6,lscs:38,ind:13,apo:75,mco:13},
+              ng: {htn:15,preterm:10,sga:10,lga:7,fd:10,lscs:25,ind:14,apo:69,mco:14} } },
+  1: { name:"CS", full:"Cluster Spiker", color:"#D4835A", bg:"#FDF0EB",
+       fbs_z:-0.327, d1_z:0.570, d2_z:0.875, fbs_r:78.7, d1_r:72.1, d2_r:53.1,
+       profile:"Normal fasting, high 1hr spike, elevated 2hr",
+       note:"LGA risk dominant. First-phase response high but clearance slow.",
+       advice:"Target 1hr postprandial below 140. Serial growth scans for macrosomia.",
+       pred:{ all:{htn:18,preterm:10,sga:8,lga:11,fd:11,lscs:38,ind:15,apo:76,mco:15},
+              gdm:{htn:17,preterm:9,sga:4,lga:13,fd:9,lscs:48,ind:17,apo:78,mco:17},
+              ng: {htn:18,preterm:10,sga:10,lga:9,fd:13,lscs:28,ind:13,apo:73,mco:13} } },
+  2: { name:"CF", full:"Cluster Fasting", color:"#6FA36F", bg:"#EEF6EE",
+       fbs_z:0.799, d1_z:-0.238, d2_z:-0.472, fbs_r:90.5, d1_r:47.1, d2_r:20.8,
+       profile:"High fasting, blunted spike, low excursion",
+       note:"Paradoxically low PIH. Higher SGA. Fasting glucose is the primary target.",
+       advice:"Fasting is the key target. Evening snack, metformin or basal insulin. Watch for SGA.",
+       pred:{ all:{htn:5,preterm:7,sga:13,lga:5,fd:7,lscs:46,ind:13,apo:80,mco:13},
+              gdm:{htn:3,preterm:6,sga:15,lga:3,fd:6,lscs:55,ind:15,apo:85,mco:18},
+              ng: {htn:7,preterm:7,sga:11,lga:7,fd:7,lscs:36,ind:11,apo:75,mco:7} } },
+  3: { name:"CFS", full:"Cluster Fasting-Spiker", color:"#A06898", bg:"#F5EEF8",
+       fbs_z:2.014, d1_z:2.045, d2_z:1.220, fbs_r:103.2, d1_r:117.8, d2_r:61.4,
+       profile:"High fasting, very high spike, high excursion",
+       note:"Highest LGA, preterm, MCO. Lowest SGA. Highest treatment need.",
+       advice:"Most intensive management. High insulin probability. Serial growth scans. Preterm risk.",
+       pred:{ all:{htn:17,preterm:22,sga:6,lga:28,fd:11,lscs:61,ind:28,apo:89,mco:33},
+              gdm:{htn:15,preterm:23,sga:4,lga:31,fd:12,lscs:69,ind:31,apo:92,mco:38},
+              ng: {htn:20,preterm:20,sga:10,lga:20,fd:10,lscs:40,ind:20,apo:80,mco:20} } }
+};
+
+var MATERNAL = [
+  {key:"htn", label:"HTN in pregnancy", def:"Gestational hypertension or pre-eclampsia. BP above 140/90 mmHg arising AFTER 20 weeks. EXCLUDES pre-existing or chronic hypertension diagnosed before pregnancy or before 20 weeks. ISSHP 2018."},
+  {key:"preterm", label:"Preterm Birth", def:"Delivery before 37 completed weeks of gestation."},
+  {key:"sga", label:"SGA", def:"Birth weight below 10th percentile for gestational age and sex (Intergrowth-21st)."},
+  {key:"lga", label:"LGA", def:"Birth weight above 90th percentile for gestational age and sex (Intergrowth-21st)."},
+  {key:"fd", label:"Fetal Distress", def:"Non-reassuring CTG requiring urgent operative delivery."},
+  {key:"lscs", label:"LSCS", def:"Lower segment caesarean section, any indication. In APO Extended, excluded from APO Strict. If the ONLY indication was a previous scar, tick the box that appears below."},
+  {key:"ind", label:"Induction", def:"Pharmacological or mechanical induction of labour. In APO Extended, excluded from APO Strict."}
+];
+
+var ADDITIONAL = [
+  {key:"pph", label:"PPH", def:"Postpartum haemorrhage. Blood loss above 500 mL vaginal or 1000 mL caesarean, or requiring intervention."},
+  {key:"prom", label:"PROM / PPROM", def:"Rupture of membranes before onset of labour. Record for both term and preterm."},
+  {key:"instrumental", label:"Instrumental delivery", def:"Forceps or vacuum assisted vaginal delivery."},
+  {key:"iud", label:"Stillbirth / IUD", def:"Intrauterine fetal death at or after 20 weeks. Distinct from neonatal mortality, which follows a live birth."}
+];
+
+var NEONATAL = [
+  {key:"apgar_low", label:"APGAR under 7 at 5 min", def:"APGAR score below 7 at 5 minutes. Marker of birth asphyxia or neonatal depression."},
+  {key:"neonatal_resus", label:"Neonatal Resus", def:"Active resuscitation beyond routine drying and stimulation."},
+  {key:"neonatal_jaundice", label:"Neonatal Jaundice", def:"Jaundice requiring phototherapy or exchange transfusion."},
+  {key:"nicu_admission", label:"NICU Admission", def:"Admission to neonatal intensive care unit for any reason."},
+  {key:"neonatal_mortality", label:"Neonatal Mortality", def:"Death within 28 days of birth."}
+];
+
+var TREATMENTS = [
+  {key:"tx_diet", label:"Diabetic Diet"},
+  {key:"tx_metformin", label:"Metformin"},
+  {key:"tx_insulin", label:"Insulin"},
+  {key:"tx_antihtn", label:"Antihypertensive"},
+  {key:"tx_aspirin", label:"Aspirin"}
+];
+
+function stdz(v,m,s){ return (v-m)/s; }
+function edist(p,c){
+  return Math.sqrt(Math.pow(p.fbs_z-c.fbs_z,2) + Math.pow(p.d1_z-c.d1_z,2) + Math.pow(p.d2_z-c.d2_z,2));
+}
+function num(v){ var n = parseFloat(v); return isNaN(n) ? null : n; }
+
+var ST = {
+  card:  {background:"#fff",borderRadius:12,padding:"16px 18px",boxShadow:"0 1px 6px rgba(0,0,0,0.08)",marginBottom:14},
+  inp:   {width:"100%",padding:"10px 11px",border:"1.5px solid #C5D5EA",borderRadius:7,fontSize:15,fontWeight:700,color:"#1F3864",background:"#F4F8FF",outline:"none",boxSizing:"border-box"},
+  inpW:  {width:"100%",padding:"10px 11px",border:"1.5px solid #E09B5A",borderRadius:7,fontSize:15,fontWeight:700,color:"#1F3864",background:"#FFF8F0",outline:"none",boxSizing:"border-box"},
+  inpE:  {width:"100%",padding:"10px 11px",border:"2px solid #B00020",borderRadius:7,fontSize:15,fontWeight:700,color:"#1F3864",background:"#FFF0F0",outline:"none",boxSizing:"border-box"},
+  lbl:   {fontSize:11,fontWeight:600,color:"#555",marginBottom:5,display:"block"}
+};
+
+function btnS(col,small,dis){
+  return {padding: small?"8px 14px":"11px 0", background: dis?"#bbb":(col||"#1F3864"),
+    color:"#fff", border:"none", borderRadius:8, fontSize: small?12:14,
+    fontWeight:700, cursor: dis?"not-allowed":"pointer", width: small?"auto":"100%"};
+}
+function togS(active,col){
+  return {padding:"10px 10px", border:"2px solid "+(active?col:"#ddd"), borderRadius:8,
+    background: active?col:"#fafafa", color: active?"#fff":"#999",
+    fontWeight:700, fontSize:12, cursor:"pointer", textAlign:"center"};
+}
+function tabS(a){
+  return {padding:"9px 14px", border:"none", borderRadius:8, fontWeight:700,
+    fontSize:13, cursor:"pointer", background: a?"#1F3864":"#E2E8F4", color: a?"#fff":"#555"};
+}
+function grid(cols,gap,mb){
+  return {display:"grid", gridTemplateColumns:cols, gap:(gap||10), marginBottom:(mb||0)};
+}
+function sec(title,sub){
+  var kids = [h("div",{key:"t",style:{fontWeight:700,color:"#1F3864",fontSize:13}},title)];
+  if(sub){ kids.push(h("div",{key:"s",style:{fontSize:10,color:"#888",marginTop:2}},sub)); }
+  return h("div",{style:{marginBottom:12}}, kids);
+}
+
+function App(){
+  var s_fbs = useState(""), fbs = s_fbs[0], setFbs = s_fbs[1];
+  var s_hr1 = useState(""), hr1 = s_hr1[0], setHr1 = s_hr1[1];
+  var s_hr2 = useState(""), hr2 = s_hr2[0], setHr2 = s_hr2[1];
+  var s_sid = useState(""), studyId = s_sid[0], setStudyId = s_sid[1];
+  var s_cen = useState(""), centre = s_cen[0], setCentre = s_cen[1];
+  var s_gdm = useState(null), isGdm = s_gdm[0], setIsGdm = s_gdm[1];
+  var s_age = useState(""), age = s_age[0], setAge = s_age[1];
+  var s_bmi = useState(""), bmi = s_bmi[0], setBmi = s_bmi[1];
+  var s_par = useState(""), parity = s_par[0], setParity = s_par[1];
+  var s_gao = useState(""), gaOgtt = s_gao[0], setGaOgtt = s_gao[1];
+  var s_res = useState(null), result = s_res[0], setResult = s_res[1];
+  var s_mo  = useState({}), mOuts = s_mo[0], setMOuts = s_mo[1];
+  var s_no  = useState({}), nOuts = s_no[0], setNOuts = s_no[1];
+  var s_nna = useState(false), neoNa = s_nna[0], setNeoNa = s_nna[1];
+  var s_gad = useState(""), gaDel = s_gad[0], setGaDel = s_gad[1];
+  var s_bwt = useState(""), bwt = s_bwt[0], setBwt = s_bwt[1];
+  var s_sex = useState(null), babySex = s_sex[0], setBabySex = s_sex[1];
+  var s_add = useState({}), aOuts = s_add[0], setAOuts = s_add[1];
+  var s_plo = useState(false), priorLscsOnly = s_plo[0], setPriorLscsOnly = s_plo[1];
+  var s_mp  = useState(false), multiPreg = s_mp[0], setMultiPreg = s_mp[1];
+  var s_arm = useState(null), studyArm = s_arm[0], setStudyArm = s_arm[1];
+  var s_tx  = useState({}), txs = s_tx[0], setTxs = s_tx[1];
+  var s_om  = useState(""), otherMeds = s_om[0], setOtherMeds = s_om[1];
+  var s_rem = useState(""), remarks = s_rem[0], setRemarks = s_rem[1];
+  var s_cas = useState([]), cases = s_cas[0], setCases = s_cas[1];
+  var s_ld  = useState(true), loading = s_ld[0], setLoading = s_ld[1];
+  var s_sv  = useState(false), saving = s_sv[0], setSaving = s_sv[1];
+  var s_sd  = useState(false), saved = s_sd[0], setSaved = s_sd[1];
+  var s_sr  = useState(null), savedRow = s_sr[0], setSavedRow = s_sr[1];
+  var s_er  = useState(""), err = s_er[0], setErr = s_er[1];
+  var s_se  = useState(""), saveErr = s_se[0], setSaveErr = s_se[1];
+  var s_tab = useState("calc"), tab = s_tab[0], setTab = s_tab[1];
+  var s_pw  = useState(""), pwInput = s_pw[0], setPwInput = s_pw[1];
+  var s_pok = useState(false), pwOk = s_pok[0], setPwOk = s_pok[1];
+
+  useEffect(function(){
+    dbFetch().then(function(d){
+      setCases(Array.isArray(d) ? d : []);
+      setLoading(false);
+    });
+  }, []);
+
+  function resetAll(){
+    setResult(null); setFbs(""); setHr1(""); setHr2("");
+    setStudyId(""); setIsGdm(null);
+    setAge(""); setBmi(""); setParity(""); setGaOgtt("");
+    setMOuts({}); setNOuts({}); setAOuts({}); setNeoNa(false); setPriorLscsOnly(false);
+    setGaDel(""); setBwt(""); setBabySex(null);
+    setTxs({}); setOtherMeds(""); setRemarks(""); setMultiPreg(false);
+    setSaved(false); setSavedRow(null); setSaveErr(""); setErr("");
+  }
+
+  function getBlockers(){
+    var b = [];
+    var f=num(fbs), h1=num(hr1), h2=num(hr2), bw=num(bwt);
+    var p=num(parity), a=num(age), g=num(gaOgtt), gd=num(gaDel), bm=num(bmi);
+    if(f !== null && f < 50) b.push("FBS below 50 mg/dL is not plausible");
+    if(f !== null && f > 126) b.push("FBS above 126 mg/dL indicates overt diabetes, exclude from study");
+    if(h1 !== null && h1 < 50) b.push("1hr glucose below 50 mg/dL is not plausible");
+    if(h2 !== null && h2 < 50) b.push("2hr glucose below 50 mg/dL is not plausible");
+    if(bw !== null && bw > 0 && bw < 500) b.push("Birth weight below 500 g is not plausible");
+    if(p !== null && p < 0) b.push("Parity cannot be negative");
+    if(p !== null && p > 15) b.push("Parity above 15 is not plausible");
+    if(a !== null && a < 10) b.push("Age below 10 years is not plausible");
+    if(a !== null && a > 60) b.push("Age above 60 years is not plausible");
+    if(bm !== null && (bm < 10 || bm > 70)) b.push("BMI must be between 10 and 70");
+    if(g !== null && (g < 4 || g > 42)) b.push("GA at OGTT must be between 4 and 42 weeks");
+    if(gd !== null && (gd < 20 || gd > 45)) b.push("GA at delivery must be between 20 and 45 weeks");
+    if(multiPreg) b.push("Multiple pregnancy is an exclusion criterion for this study");
+    return b;
+  }
+
+  function getWarnings(){
+    var w = [];
+    var a=num(age), bm=num(bmi), g=num(gaOgtt), h2=num(hr2), bw=num(bwt), gd=num(gaDel);
+    if(a !== null && a < 18) w.push("Age below 18 years, please verify");
+    if(a !== null && a > 40) w.push("Age above 40 years, please verify");
+    if(bm !== null && bm < 18) w.push("BMI below 18, underweight, please verify");
+    if(bm !== null && bm > 35) w.push("BMI above 35, severe obesity, please verify");
+    if(g !== null && g < 10) w.push("GA at OGTT below 10 weeks, unusually early, please verify");
+    if(g !== null && g > 36) w.push("GA at OGTT above 36 weeks, very late testing, please verify");
+    if(h2 !== null && h2 > 200) w.push("2hr glucose above 200, consider overt diabetes in pregnancy");
+    if(bw !== null && bw >= 500 && bw < 1000) w.push("Birth weight below 1000 g, extreme low birth weight, please verify");
+    if(bw !== null && bw > 4000) w.push("Birth weight above 4000 g, macrosomia, please verify");
+    if(gd !== null && gd < 24) w.push("GA at delivery below 24 weeks, please verify");
+    if(gd !== null && gd > 43) w.push("GA at delivery above 43 weeks, please verify");
+    return w;
+  }
+
+  var blockers = getBlockers();
+  var warnings = getWarnings();
+
+  function assign(){
+    var f=num(fbs), h1=num(hr1), h2=num(hr2);
+    if(f === null || h1 === null || h2 === null){ setErr("Enter all three OGTT values."); return; }
+    if(blockers.length > 0){ setErr(blockers.join(" | ")); return; }
+    if(isGdm === null){ setErr("Select GDM status first."); return; }
+    if(studyArm === null){ setErr("Select study arm (prospective or retrospective) first."); return; }
+    setErr(""); setSaved(false); setSavedRow(null); setSaveErr("");
+    setMOuts({}); setNOuts({}); setAOuts({}); setNeoNa(false); setPriorLscsOnly(false);
+    setTxs({}); setOtherMeds(""); setRemarks("");
+    setGaDel(""); setBwt(""); setBabySex(null);
+    var d1 = h1 - f, d2 = h2 - f;
+    var pt = {
+      fbs_z: stdz(f, NORM.fbs.mean, NORM.fbs.sd),
+      d1_z:  stdz(d1, NORM.d1.mean, NORM.d1.sd),
+      d2_z:  stdz(d2, NORM.d2.mean, NORM.d2.sd)
+    };
+    var dists = [0,1,2,3].map(function(cid){
+      return { cid: cid, d: edist(pt, C[cid]) };
+    }).sort(function(a,b){ return a.d - b.d; });
+    var conf = ((dists[1].d - dists[0].d) / dists[1].d * 100).toFixed(0);
+    setResult({ cl: C[dists[0].cid], cid: dists[0].cid, d1: d1, d2: d2,
+      dists: dists, conf: conf, pt: pt, f: f, h1: h1, h2: h2, isGdm: isGdm });
+  }
+
+  function saveCase(){
+    if(!result) return;
+    if(blockers.length > 0){ setSaveErr("Cannot save: " + blockers.join(" | ")); return; }
+    setSaving(true); setSaveErr("");
+    // FROZEN composites - definitions unchanged from derivation cohort
+    var apo = MATERNAL.some(function(o){ return mOuts[o.key] === 1; });
+    var apoStrict = MATERNAL.filter(function(o){ return o.key !== "lscs" && o.key !== "ind"; })
+                            .some(function(o){ return mOuts[o.key] === 1; });
+    var mco = MATERNAL.filter(function(o){ return mOuts[o.key] === 1; }).length >= 2;
+    var apoNeo = !neoNa && NEONATAL.some(function(o){ return nOuts[o.key] === 1; });
+    // VALIDATION APO - all maternal + additional outcomes,
+    // LSCS counted only when previous scar was NOT the sole indication
+    var lscsCounts = (mOuts["lscs"] === 1) && !priorLscsOnly;
+    var apoVal = MATERNAL.some(function(o){
+                    return o.key === "lscs" ? lscsCounts : mOuts[o.key] === 1;
+                 }) || ADDITIONAL.some(function(o){ return aOuts[o.key] === 1; });
+    var row = {
+      pid: studyId || "anon",
+      centre: centre || "unspecified",
+      age: num(age), bmi: num(bmi), parity: num(parity), ga_ogtt: num(gaOgtt),
+      fbs: result.f, hr1: result.h1, hr2: result.h2,
+      d1hr: parseFloat(result.d1.toFixed(1)),
+      d2hr: parseFloat(result.d2.toFixed(1)),
+      fbs_z: parseFloat(result.pt.fbs_z.toFixed(4)),
+      d1_z: parseFloat(result.pt.d1_z.toFixed(4)),
+      d2_z: parseFloat(result.pt.d2_z.toFixed(4)),
+      cluster: result.cl.name, cid: result.cid,
+      dist: parseFloat(result.dists[0].d.toFixed(4)),
+      conf: parseInt(result.conf, 10),
+      is_gdm: result.isGdm,
+      has_outcomes: Object.keys(mOuts).length > 0,
+      apo: apo, apo_strict: apoStrict, mco: mco,
+      apo_validation: apoVal,
+      prior_lscs_only: priorLscsOnly,
+      study_arm: studyArm,
+      multiple_pregnancy: multiPreg,
+      ga_delivery: num(gaDel), birth_weight: num(bwt), baby_sex: babySex || null,
+      apo_neonatal: apoNeo, neonatal_na: neoNa,
+      other_meds: otherMeds || null,
+      remarks: remarks || null,
+      created_at: new Date().toISOString()
+    };
+    MATERNAL.forEach(function(o){ row[o.key] = mOuts[o.key] === 1; });
+    TREATMENTS.forEach(function(t){ row[t.key] = result.isGdm ? !!txs[t.key] : false; });
+    ADDITIONAL.forEach(function(o){ row[o.key] = aOuts[o.key] === 1; });
+    NEONATAL.forEach(function(o){ row[o.key] = !neoNa && nOuts[o.key] === 1; });
+
+    dbInsert(row).then(function(ins){
+      if(ins){
+        setCases(function(p){ return [ins].concat(p); });
+        setSavedRow(ins); setSaved(true);
+      } else {
+        setSaveErr("Save failed: " + (window._SB_ERR || "check connection"));
+      }
+      setSaving(false);
+    });
+  }
+
+  function undoSave(){
+    if(!savedRow) return;
+    if(!window.confirm("Delete this submission? This cannot be undone.")) return;
+    setSaving(true);
+    var id = (savedRow.id !== undefined) ? savedRow.id : savedRow._lid;
+    dbDelete(id).then(function(ok){
+      if(ok){
+        setCases(function(p){
+          return p.filter(function(x){
+            return ((x.id !== undefined) ? x.id : x._lid) !== id;
+          });
+        });
+        setSaved(false); setSavedRow(null); setSaveErr("");
+        window.alert("Entry deleted. You can correct and resubmit.");
+      } else {
+        var m = window._SB_ERR || "";
+        if(m.indexOf("42501") > -1 || m.indexOf("401") > -1 || m.indexOf("403") > -1){
+          setSaveErr("This entry cannot be deleted from here. The database is set to prevent deletions. Correct the record in the Supabase dashboard instead.");
+        } else {
+          setSaveErr("Delete failed: " + (m || "check connection"));
+        }
+      }
+      setSaving(false);
+    });
+  }
+
+  function deleteRow(c){
+    if(!window.confirm("Delete this case permanently?")) return;
+    var id = (c.id !== undefined) ? c.id : c._lid;
+    dbDelete(id).then(function(ok){
+      if(ok){
+        setCases(function(p){
+          return p.filter(function(x){
+            return ((x.id !== undefined) ? x.id : x._lid) !== id;
+          });
+        });
+      } else {
+        window.alert("Delete failed: " + (window._SB_ERR || "check connection"));
+      }
+    });
+  }
+
+  function toggleNum(setter, key){
+    setter(function(p){
+      var n = Object.assign({}, p);
+      n[key] = (p[key] === 1) ? 0 : 1;
+      return n;
+    });
+  }
+  function toggleBool(setter, key){
+    setter(function(p){
+      var n = Object.assign({}, p);
+      n[key] = !p[key];
+      return n;
+    });
+  }
+
+  var d1v = (num(fbs) !== null && num(hr1) !== null) ? (num(hr1) - num(fbs)).toFixed(1) : "-";
+  var d2v = (num(fbs) !== null && num(hr2) !== null) ? (num(hr2) - num(fbs)).toFixed(1) : "-";
+  var d12 = (d1v !== "-" && d2v !== "-" && parseFloat(d2v) !== 0)
+              ? (parseFloat(d1v) / parseFloat(d2v)).toFixed(2) : "-";
+
+  function noticeBox(kind, title, items){
+    var isErr = kind === "error";
+    return h("div", {style:{
+        background: isErr ? "#FFF0F0" : "#FFF8E1",
+        border: "1.5px solid " + (isErr ? "#B00020" : "#E09B5A"),
+        borderRadius: 8, padding: "10px 12px", marginBottom: 12}},
+      h("div", {style:{fontWeight:700, color: isErr?"#B00020":"#8B5000", fontSize:12, marginBottom:5}}, title),
+      items.map(function(x, i){
+        return h("div", {key:i, style:{fontSize:12, color: isErr?"#B00020":"#8B5000", marginBottom:2}}, "- " + x);
+      })
+    );
+  }
+
+  function textField(label, val, setter, ph, style){
+    return h("div", null,
+      h("label", {style:ST.lbl}, label),
+      h("input", {value:val, placeholder:ph, style:style||ST.inp,
+        onChange: function(e){ setter(e.target.value); }})
+    );
+  }
+  function numField(label, val, setter, ph, style){
+    return h("div", null,
+      h("label", {style:ST.lbl}, label),
+      h("input", {value:val, placeholder:ph, type:"number", style:style||ST.inp,
+        onChange: function(e){ setter(e.target.value); }})
+    );
+  }
+
+  // ---------- CALC TAB ----------
+  function renderCalcForm(){
+    var ageStyle = (age && (num(age) < 18 || num(age) > 40)) ? ST.inpW : ST.inp;
+    if(age && (num(age) < 10 || num(age) > 60)) ageStyle = ST.inpE;
+    var bmiStyle = (bmi && (num(bmi) < 18 || num(bmi) > 35)) ? ST.inpW : ST.inp;
+    if(bmi && (num(bmi) < 10 || num(bmi) > 70)) bmiStyle = ST.inpE;
+    var gaStyle = (gaOgtt && (num(gaOgtt) < 10 || num(gaOgtt) > 36)) ? ST.inpW : ST.inp;
+    if(gaOgtt && (num(gaOgtt) < 4 || num(gaOgtt) > 42)) gaStyle = ST.inpE;
+    var fbsStyle = (fbs && (num(fbs) < 50 || num(fbs) > 126)) ? ST.inpE : ST.inp;
+    var h1Style = (hr1 && num(hr1) < 50) ? ST.inpE : ST.inp;
+    var h2Style = ST.inp;
+    if(hr2 && num(hr2) > 200) h2Style = ST.inpW;
+    if(hr2 && num(hr2) < 50) h2Style = ST.inpE;
+
+    var kids = [];
+    kids.push(h("div", {key:"s1"}, sec("Patient Details")));
+    kids.push(h("div", {key:"r1", className:"g2", style:grid("1fr 1fr",12,14)},
+      textField("Centre / Hospital", centre, setCentre, "e.g. St Johns"),
+      textField("Study ID", studyId, setStudyId, "e.g. SJMCH-001")
+    ));
+    kids.push(h("div", {key:"s2"}, sec("Patient Demographics","From antenatal card. All optional.")));
+    kids.push(h("div", {key:"r2", className:"g4", style:grid("1fr 1fr 1fr 1fr",10,14)},
+      numField("Age (years)", age, setAge, "28", ageStyle),
+      numField("BMI kg/m2", bmi, setBmi, "24.5", bmiStyle),
+      numField("Parity", parity, setParity, "0 / 1 / 2"),
+      numField("GA at OGTT (wks)", gaOgtt, setGaOgtt, "24", gaStyle)
+    ));
+    kids.push(h("div", {key:"s3"}, sec("GDM Status (required)")));
+    kids.push(h("div", {key:"r3", className:"g2", style:grid("1fr 1fr",10,16)},
+      h("button", {style:togS(isGdm===true,"#D4835A"), onClick:function(){setIsGdm(true);}}, "GDM Diagnosed"),
+      h("button", {style:togS(isGdm===false,"#5E81A2"), onClick:function(){setIsGdm(false);}}, "Non-GDM (below IADPSG)")
+    ));
+    kids.push(h("div", {key:"s3b"}, sec("Study Arm (required)")));
+    kids.push(h("div", {key:"r3b", className:"g2", style:grid("1fr 1fr",10,14)},
+      h("button", {style:togS(studyArm==="prospective","#2E75B6"),
+        onClick:function(){setStudyArm("prospective");}}, "Prospective"),
+      h("button", {style:togS(studyArm==="retrospective","#6B7280"),
+        onClick:function(){setStudyArm("retrospective");}}, "Retrospective")
+    ));
+    kids.push(h("div", {key:"s3c"}, sec("Exclusion Check")));
+    kids.push(h("button", {key:"r3c",
+      style:Object.assign({}, togS(multiPreg,"#B00020"), {width:"100%", marginBottom:16}),
+      onClick:function(){ setMultiPreg(!multiPreg); }},
+      "Multiple pregnancy (twins or higher) - EXCLUDES from study"));
+    kids.push(h("div", {key:"s4"}, sec("75g OGTT Values (mg/dL)","FBS must be between 50 and 126")));
+    kids.push(h("div", {key:"r4", className:"g3", style:grid("1fr 1fr 1fr",10,10)},
+      numField("FBS", fbs, setFbs, "85", fbsStyle),
+      numField("1hr", hr1, setHr1, "148", h1Style),
+      numField("2hr", hr2, setHr2, "130", h2Style)
+    ));
+    kids.push(h("div", {key:"r5", className:"g3", style:grid("1fr 1fr 1fr",8,14)},
+      [["Delta 1hr",d1v],["Delta 2hr",d2v],["D1:D2 ratio",d12]].map(function(p){
+        return h("div", {key:p[0], style:{background:"#EBF2F8",borderRadius:7,padding:"8px 10px"}},
+          h("div", {style:{fontSize:10,fontWeight:600,color:"#555"}}, p[0]),
+          h("div", {style:{fontSize:16,fontWeight:800,color:"#1F3864"}}, p[1])
+        );
+      })
+    ));
+    if(blockers.length > 0){
+      kids.push(h("div", {key:"bl"}, noticeBox("error","Cannot proceed", blockers)));
+    } else if(warnings.length > 0){
+      kids.push(h("div", {key:"wn"}, noticeBox("warn","Please verify these values", warnings)));
+    }
+    if(err){
+      kids.push(h("div", {key:"er", style:{color:"#B00020",fontSize:12,marginBottom:10,
+        padding:"8px 12px",background:"#FFF0F0",borderRadius:6}}, err));
+    }
+    kids.push(h("button", {key:"go", onClick:assign, disabled: blockers.length>0,
+      style: btnS(blockers.length>0 ? "#bbb" : "#1F3864", false, blockers.length>0)},
+      "Assign to Cluster"));
+
+    return h("div", {style:ST.card}, kids);
+  }
+
+  function renderResult(){
+    if(!result) return null;
+    var cl = result.cl;
+    var pred = result.isGdm ? cl.pred.gdm : cl.pred.ng;
+    var out = [];
+
+    out.push(h("div", {key:"ban", style:{background:cl.color,borderRadius:12,
+        padding:"16px 18px",marginBottom:12,color:"#fff"}},
+      h("div",{style:{fontSize:11,opacity:0.8}}, (result.isGdm?"GDM":"Non-GDM") + " patient assigned to"),
+      h("div",{style:{fontSize:24,fontWeight:900}}, cl.name + " - " + cl.full),
+      h("div",{style:{fontSize:12,opacity:0.85,marginTop:4}}, cl.profile),
+      h("div",{style:{fontSize:11,opacity:0.7,marginTop:3}},
+        "Distance " + result.dists[0].d.toFixed(3) + ". Assignment margin " + result.conf + "%")
+    ));
+
+    var maxD = result.dists[result.dists.length-1].d;
+    out.push(h("div", {key:"dist", style:ST.card},
+      h("div",{style:{fontWeight:700,color:"#1F3864",fontSize:13,marginBottom:8}},"Distance to All Centroids"),
+      result.dists.map(function(row, i){
+        var cc = C[row.cid];
+        return h("div", {key:row.cid, style:{marginBottom:8}},
+          h("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:2}},
+            h("span",{style:{fontWeight:i===0?700:400,color:i===0?cc.color:"#666"}},
+              (i===0?"[assigned] ":"") + cc.name + " - " + cc.full),
+            h("span",{style:{fontWeight:700,color:i===0?cc.color:"#aaa"}}, row.d.toFixed(3))
+          ),
+          h("div",{style:{height:5,background:"#EEE",borderRadius:3}},
+            h("div",{style:{width: Math.max(3,(1-row.d/maxD)*100) + "%", height:"100%",
+              background: i===0?cc.color:"#ccc", borderRadius:3}})
+          )
+        );
+      })
+    ));
+
+    var predItems = MATERNAL.map(function(o){ return {key:o.key, label:o.label}; });
+    predItems.push({key:"apo", label:"APO Ext"});
+    predItems.push({key:"mco", label:"MCO"});
+    out.push(h("div", {key:"pred", style:ST.card},
+      h("div",{style:{fontWeight:700,color:"#1F3864",fontSize:13}},
+        "Predicted Outcome Rates. " + (result.isGdm?"GDM":"Non-GDM") + " subgroup of " + cl.name),
+      h("div",{style:{fontSize:11,color:"#888",margin:"4px 0 12px"}},
+        "From St Johns training cohort. Raw rates, not treatment adjusted."),
+      h("div",{className:"g4", style:grid("repeat(4,1fr)",8,0)},
+        predItems.map(function(it){
+          var pct = pred[it.key] || 0;
+          var col = pct > 40 ? "#B83232" : (pct > 20 ? "#C07000" : "#2E7D32");
+          return h("div",{key:it.key, style:{background:"#FAFAFA",borderRadius:7,
+              padding:"8px 9px", borderLeft:"3px solid "+col}},
+            h("div",{style:{fontSize:10,color:"#555",fontWeight:600}}, it.label),
+            h("div",{style:{fontSize:17,fontWeight:800,color:col}}, pct + "%")
+          );
+        })
+      )
+    ));
+
+    out.push(h("div", {key:"guid", style:Object.assign({},ST.card,
+        {background:cl.bg, border:"1.5px solid "+cl.color})},
+      h("div",{style:{fontWeight:800,color:cl.color,fontSize:13,marginBottom:6}}, cl.name + " Clinical Guidance"),
+      h("div",{style:{fontSize:13,color:"#333",marginBottom:4,lineHeight:1.6}}, cl.note),
+      h("div",{style:{fontSize:13,color:"#555",lineHeight:1.6,fontStyle:"italic"}}, cl.advice)
+    ));
+
+    out.push(renderEntry(cl));
+    return h("div", null, out);
+  }
+
+  function renderEntry(cl){
+    var kids = [];
+    kids.push(h("div",{key:"h"}, sec("Record for Validation Database","Enter after delivery. All fields optional.")));
+    kids.push(h("div",{key:"n", style:{fontSize:10,color:"#888",marginBottom:8}},
+      "APO Extended = any of 7. APO Strict excludes LSCS and Induction. MCO = any 2 or more of all 7."));
+
+    kids.push(h("div",{key:"mat", className:"g2", style:grid("1fr 1fr",8,12)},
+      MATERNAL.map(function(o){
+        var extra = null;
+        if(o.key === "lscs" && mOuts["lscs"] === 1){
+          extra = h("button",{
+            style:Object.assign({}, togS(priorLscsOnly,"#8B5000"),
+              {width:"100%", marginTop:4, marginBottom:3, fontSize:11}),
+            onClick:function(){ setPriorLscsOnly(!priorLscsOnly); }},
+            "Previous LSCS was the ONLY indication");
+        }
+        return h("div",{key:o.key, style:{marginBottom:4}},
+          h("button",{style:Object.assign({},togS(mOuts[o.key]===1,cl.color),{width:"100%",marginBottom:3}),
+            onClick:function(){
+              if(o.key === "lscs" && mOuts["lscs"] === 1){ setPriorLscsOnly(false); }
+              toggleNum(setMOuts, o.key);
+            }}, o.label),
+          extra,
+          h("div",{style:{fontSize:10,color:"#777",lineHeight:1.4}}, o.def)
+        );
+      })
+    ));
+
+    kids.push(h("div",{key:"addsec"}, sec("Additional Outcomes",
+      "Recorded separately. Counted in Validation APO only, not in APO Extended, APO Strict or MCO.")));
+    kids.push(h("div",{key:"add", className:"g2", style:grid("1fr 1fr",8,12)},
+      ADDITIONAL.map(function(o){
+        return h("div",{key:o.key, style:{marginBottom:4}},
+          h("button",{style:Object.assign({},togS(aOuts[o.key]===1,"#7B5EA2"),{width:"100%",marginBottom:3}),
+            onClick:function(){ toggleNum(setAOuts, o.key); }}, o.label),
+          h("div",{style:{fontSize:10,color:"#777",lineHeight:1.4}}, o.def)
+        );
+      })
+    ));
+
+    if(Object.keys(mOuts).length > 0 || Object.keys(aOuts).length > 0){
+      var apo = MATERNAL.some(function(o){ return mOuts[o.key]===1; });
+      var aps = MATERNAL.filter(function(o){ return o.key!=="lscs" && o.key!=="ind"; })
+                        .some(function(o){ return mOuts[o.key]===1; });
+      var mco = MATERNAL.filter(function(o){ return mOuts[o.key]===1; }).length >= 2;
+      var lscsC = (mOuts["lscs"]===1) && !priorLscsOnly;
+      var apoV = MATERNAL.some(function(o){
+                    return o.key==="lscs" ? lscsC : mOuts[o.key]===1;
+                 }) || ADDITIONAL.some(function(o){ return aOuts[o.key]===1; });
+      kids.push(h("div",{key:"comp", className:"g3", style:grid("1fr 1fr 1fr",8,8)},
+        [["APO Extended",apo,"#1F3864"],["APO Strict",aps,"#2E75B6"],["MCO (2 or more)",mco,"#B83232"]]
+        .map(function(p){
+          return h("div",{key:p[0], style:{background:p[1]?"#FFF0F0":"#F0FFF0",borderRadius:7,
+              padding:"8px 10px", border:"1.5px solid "+(p[1]?p[2]:"#ccc")}},
+            h("div",{style:{fontSize:10,fontWeight:600,color:"#555"}}, p[0]),
+            h("div",{style:{fontSize:14,fontWeight:800,color:p[1]?p[2]:"#2E7D32"}}, p[1]?"YES":"NO")
+          );
+        })
+      ));
+      kids.push(h("div",{key:"compv", style:{background:apoV?"#F3EDF9":"#F0FFF0",
+          borderRadius:7, padding:"9px 12px", marginBottom:14,
+          border:"1.5px solid "+(apoV?"#7B5EA2":"#ccc")}},
+        h("div",{style:{fontSize:10,fontWeight:600,color:"#555"}},
+          "VALIDATION APO   all maternal plus additional outcomes, LSCS excluded when previous scar was the sole indication"),
+        h("div",{style:{fontSize:15,fontWeight:800,color:apoV?"#7B5EA2":"#2E7D32"}}, apoV?"YES":"NO")
+      ));
+    }
+
+    if(result.isGdm){
+      kids.push(h("div",{key:"tx", style:{marginBottom:14}},
+        h("label",{style:Object.assign({},ST.lbl,{marginTop:4})}, "Treatment Received (GDM patients only)"),
+        h("div",{className:"g5", style:grid("repeat(5,1fr)",8,10)},
+          TREATMENTS.map(function(t){
+            return h("button",{key:t.key, style:togS(!!txs[t.key],"#2E7D32"),
+              onClick:function(){ toggleBool(setTxs, t.key); }}, t.label);
+          })
+        ),
+        h("label",{style:ST.lbl}, "Other Medications"),
+        h("input",{value:otherMeds, placeholder:"",
+          style:Object.assign({},ST.inp,{fontSize:13,fontWeight:400}),
+          onChange:function(e){ setOtherMeds(e.target.value); }})
+      ));
+    }
+
+    var gadStyle = (gaDel && (num(gaDel) < 24 || num(gaDel) > 43)) ? ST.inpW : ST.inp;
+    if(gaDel && (num(gaDel) < 20 || num(gaDel) > 45)) gadStyle = ST.inpE;
+    var bwtStyle = ST.inp;
+    if(bwt && (num(bwt) < 1000 || num(bwt) > 4000)) bwtStyle = ST.inpW;
+    if(bwt && num(bwt) < 500) bwtStyle = ST.inpE;
+
+    var deliv = [];
+    deliv.push(h("div",{key:"s"}, sec("Delivery and Birth Details")));
+    deliv.push(h("div",{key:"g", className:"g3", style:grid("1fr 1fr 1fr",10,14)},
+      numField("GA at delivery (wks)", gaDel, setGaDel, "38", gadStyle),
+      numField("Birth weight (g)", bwt, setBwt, "3100", bwtStyle),
+      h("div", null,
+        h("label",{style:ST.lbl}, "Baby sex"),
+        h("div",{style:grid("1fr 1fr",8,0)},
+          h("button",{style:togS(babySex==="M","#5E81A2"), onClick:function(){setBabySex("M");}}, "Male"),
+          h("button",{style:togS(babySex==="F","#5E81A2"), onClick:function(){setBabySex("F");}}, "Female")
+        )
+      )
+    ));
+    deliv.push(h("div",{key:"ns"}, sec("Neonatal Outcomes")));
+    deliv.push(h("div",{key:"nn", style:{fontSize:10,color:"#888",marginBottom:8}},
+      "Leave blank if not yet delivered"));
+    deliv.push(h("button",{key:"na",
+      style:Object.assign({},togS(neoNa,"#888"),{width:"100%",marginBottom:12}),
+      onClick:function(){ setNeoNa(!neoNa); }}, "Not Available / Data Not Yet Collected"));
+    if(!neoNa){
+      deliv.push(h("div",{key:"ng", className:"g2", style:grid("1fr 1fr",8,10)},
+        NEONATAL.map(function(o){
+          return h("div",{key:o.key, style:{marginBottom:4}},
+            h("button",{style:Object.assign({},togS(nOuts[o.key]===1,"#E09B5A"),{width:"100%",marginBottom:3}),
+              onClick:function(){ toggleNum(setNOuts, o.key); }}, o.label),
+            h("div",{style:{fontSize:10,color:"#777",lineHeight:1.4}}, o.def)
+          );
+        })
+      ));
+      if(Object.keys(nOuts).length > 0){
+        var anyNeo = NEONATAL.some(function(o){ return nOuts[o.key]===1; });
+        deliv.push(h("div",{key:"nc", style:{background:anyNeo?"#FFF3E8":"#F0FFF0",
+            borderRadius:7,padding:"8px 10px",marginBottom:10,
+            border:"1.5px solid "+(anyNeo?"#E09B5A":"#ccc")}},
+          h("div",{style:{fontSize:10,fontWeight:600,color:"#555"}},"APO Neonatal (any 1 of 5)"),
+          h("div",{style:{fontSize:14,fontWeight:800,color:anyNeo?"#E09B5A":"#2E7D32"}}, anyNeo?"YES":"NO")
+        ));
+      }
+    }
+    kids.push(h("div",{key:"deliv", style:{borderTop:"1.5px solid #EEE",paddingTop:14,marginTop:4}}, deliv));
+
+    kids.push(h("div",{key:"remsec", style:{borderTop:"1.5px solid #EEE",paddingTop:14,marginTop:4,marginBottom:14}},
+      sec("Other Complications / Remarks",
+          "Free text. Not counted in any composite outcome. Use only for events not captured above, for example an unusual complication or an important clinical detail."),
+      h("textarea",{value:remarks, placeholder:"",
+        rows:3,
+        style:Object.assign({}, ST.inp, {fontSize:13, fontWeight:400, resize:"vertical",
+          fontFamily:"inherit", lineHeight:1.5}),
+        onChange:function(e){ setRemarks(e.target.value); }}),
+      h("div",{style:{fontSize:10,color:"#888",marginTop:5,lineHeight:1.5}},
+        "Most complications are already captured indirectly. NICU admission covers respiratory distress, neonatal hypoglycaemia, sepsis and significant jaundice. LGA covers macrosomia and polyhydramnios. Fetal distress and APGAR cover meconium with compromise. Record here only what falls outside these.")
+    ));
+
+    if(warnings.length > 0){
+      kids.push(h("div",{key:"w2"}, noticeBox("warn","Please verify before saving", warnings)));
+    }
+    if(saveErr){
+      kids.push(h("div",{key:"se", style:{color:"#B00020",fontSize:12,marginBottom:8,
+        padding:"7px 10px",background:"#FFF0F0",borderRadius:6}}, saveErr));
+    }
+
+    if(!saved){
+      kids.push(h("div",{key:"btns", style:{display:"flex",gap:10}},
+        h("button",{onClick:saveCase, disabled:saving,
+          style:Object.assign({},btnS("#1F3864",false,saving),{flex:1})},
+          saving ? "Saving..." : "Save to Validation Database"),
+        h("button",{onClick:resetAll, style:btnS("#888",true,false)}, "New Patient")
+      ));
+    } else {
+      var canUndo = savedRow && !savedRow._noUndo &&
+                    (savedRow.id !== undefined || savedRow._lid !== undefined);
+      var msg = canUndo
+        ? "Total " + cases.length + " cases in database. If you made a mistake you can delete this entry and re-enter it."
+        : "Saved to the database. This entry cannot be removed from here because the database is set to insert-only. To correct it, edit the record in the Supabase dashboard.";
+      var actions = canUndo
+        ? [ h("button",{key:"u", onClick:undoSave, disabled:saving,
+              style:Object.assign({},btnS("#B00020",false,saving),{flex:1})},
+              saving ? "Deleting..." : "Delete This Entry (Undo)"),
+            h("button",{key:"n", onClick:resetAll,
+              style:Object.assign({},btnS("#2E7D32",false,false),{flex:1})}, "Next Patient") ]
+        : [ h("button",{key:"n", onClick:resetAll,
+              style:Object.assign({},btnS("#2E7D32",false,false),{flex:1})}, "Next Patient") ];
+      kids.push(h("div",{key:"ok"},
+        h("div",{style:{background:"#EEF6EE",border:"1.5px solid #2E7D32",borderRadius:8,
+            padding:"12px 14px",marginBottom:10}},
+          h("div",{style:{fontWeight:700,color:"#2E7D32",fontSize:13,marginBottom:4}},"Saved successfully"),
+          h("div",{style:{fontSize:12,color:"#555"}}, msg)
+        ),
+        h("div",{style:{display:"flex",gap:10}}, actions)
+      ));
+    }
+
+    return h("div",{key:"entry", style:ST.card}, kids);
+  }
+
+  // ---------- VALIDATE TAB ----------
+  function renderValidate(){
+    var kids = [];
+    if(window._READ_ERR){
+      kids.push(h("div",{key:"re", style:{background:"#FFF8E1",border:"1.5px solid #E09B5A",
+          borderRadius:10,padding:"12px 14px",marginBottom:14}},
+        h("div",{style:{fontWeight:700,color:"#8B5000",fontSize:13,marginBottom:4}},"Database read unavailable"),
+        h("div",{style:{fontSize:12,color:"#5C3600",lineHeight:1.6}},
+          "Saving new cases still works normally. Read access is restricted at the database level, so counts and statistics cannot be shown here. Export from the Supabase dashboard.")
+      ));
+    }
+    var withOut = cases.filter(function(c){ return c.has_outcomes; });
+    var summary = [
+      ["Total", cases.length, "#1F3864"],
+      ["With outcomes", withOut.length, "#2E7D32"],
+      ["GDM", cases.filter(function(c){ return c.is_gdm===true; }).length, "#D4835A"],
+      ["Non-GDM", cases.filter(function(c){ return c.is_gdm===false; }).length, "#5E81A2"]
+    ];
+    kids.push(h("div",{key:"sum", style:ST.card},
+      h("div",{style:{fontWeight:700,color:"#1F3864",fontSize:14,marginBottom:12}},"Validation Summary"),
+      h("div",{className:"g4", style:grid("repeat(4,1fr)",10,0)},
+        summary.map(function(p){
+          return h("div",{key:p[0], style:{background:"#F8F8F8",borderRadius:8,
+              padding:"10px 12px",textAlign:"center"}},
+            h("div",{style:{fontSize:10,color:"#888",fontWeight:600}}, p[0]),
+            h("div",{style:{fontSize:22,fontWeight:800,color:p[2]}}, p[1])
+          );
+        })
+      )
+    ));
+
+    if(withOut.length === 0){
+      kids.push(h("div",{key:"none", style:Object.assign({},ST.card,
+          {textAlign:"center",padding:"32px",color:"#aaa"})},
+        h("div",{style:{fontWeight:700,fontSize:14,color:"#666"}},"No outcome data yet"),
+        h("div",{style:{fontSize:12,marginTop:6}},"Save cases with outcomes in the Assign tab")
+      ));
+    } else {
+      [0,1,2,3].forEach(function(cid){
+        var cl = C[cid];
+        var pts = withOut.filter(function(c){ return c.cid === cid; });
+        if(pts.length === 0){
+          kids.push(h("div",{key:"c"+cid, style:Object.assign({},ST.card,
+              {borderLeft:"4px solid "+cl.color, opacity:0.5})},
+            h("span",{style:{fontWeight:700,color:cl.color}}, cl.name),
+            h("span",{style:{fontSize:12,color:"#aaa",marginLeft:8}},"No cases yet")
+          ));
+          return;
+        }
+        var items = MATERNAL.map(function(o){ return {key:o.key,label:o.label}; });
+        items.push({key:"apo", label:"APO Ext"});
+        kids.push(h("div",{key:"c"+cid, style:Object.assign({},ST.card,
+            {borderLeft:"4px solid "+cl.color})},
+          h("div",{style:{fontWeight:700,color:cl.color,fontSize:14,marginBottom:4}}, cl.name+" - "+cl.full),
+          h("div",{style:{fontSize:12,color:"#888",marginBottom:12}}, "n=" + pts.length + " validated"),
+          h("div",{className:"g4", style:grid("repeat(4,1fr)",8,0)},
+            items.map(function(it){
+              var pv = cl.pred.all[it.key] || 0;
+              var act = pts.filter(function(p){ return p[it.key]===true || p[it.key]===1; }).length / pts.length * 100;
+              var diff = Math.abs(act - pv);
+              var col = diff < 10 ? "#2E7D32" : (diff < 20 ? "#C07000" : "#B83232");
+              var tag = diff < 10 ? "match" : (diff < 20 ? "close" : "diff");
+              return h("div",{key:it.key, style:{background:"#FAFAFA",borderRadius:7,padding:"8px 9px"}},
+                h("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:3}},
+                  h("span",{style:{fontSize:10,fontWeight:600,color:"#555"}}, it.label),
+                  h("span",{style:{fontSize:10,fontWeight:700,color:col}}, tag)
+                ),
+                h("div",{style:{fontSize:11,color:"#888"}}, "Pred " + pv + "%"),
+                h("div",{style:{height:4,background:"#EEE",borderRadius:3,margin:"3px 0"}},
+                  h("div",{style:{width: Math.min(100,act)+"%", height:"100%", background:col, borderRadius:3}})
+                ),
+                h("div",{style:{fontSize:11,color:"#888"}}, "Actual " + act.toFixed(0) + "%")
+              );
+            })
+          )
+        ));
+      });
+    }
+    return h("div", null, kids);
+  }
+
+  // ---------- DATA TAB ----------
+  function exportCsv(){
+    var QT = String.fromCharCode(34);
+    function esc(v){
+      var t = (v === null || v === undefined) ? "" : String(v);
+      return QT + t.split(QT).join(QT+QT) + QT;
+    }
+    var hdrs = ["n","centre","study_id","date","age","bmi","parity","ga_ogtt",
+      "fbs","hr1","hr2","d1hr","d2hr","cluster","gdm","margin"];
+    MATERNAL.forEach(function(o){ hdrs.push(o.key); });
+    ADDITIONAL.forEach(function(o){ hdrs.push(o.key); });
+    hdrs.push("prior_lscs_only","apo","apo_strict","mco","apo_validation",
+              "study_arm","ga_delivery","birth_weight","baby_sex");
+    TREATMENTS.forEach(function(t){ hdrs.push(t.key); });
+    hdrs.push("other_meds","remarks");
+    NEONATAL.forEach(function(o){ hdrs.push(o.key); });
+    hdrs.push("neonatal_na","apo_neonatal");
+
+    var rows = cases.map(function(c, i){
+      var r = [i+1, c.centre, c.pid, c.created_at ? c.created_at.slice(0,10) : "",
+        c.age, c.bmi, c.parity, c.ga_ogtt, c.fbs, c.hr1, c.hr2, c.d1hr, c.d2hr,
+        c.cluster, c.is_gdm ? "GDM" : "Non-GDM", c.conf];
+      MATERNAL.forEach(function(o){ r.push(c[o.key] === true ? 1 : 0); });
+      ADDITIONAL.forEach(function(o){ r.push(c[o.key] === true ? 1 : 0); });
+      r.push(c.prior_lscs_only?1:0, c.apo?1:0, c.apo_strict?1:0, c.mco?1:0,
+             c.apo_validation?1:0, c.study_arm, c.ga_delivery, c.birth_weight, c.baby_sex);
+      TREATMENTS.forEach(function(t){ r.push(c[t.key] === true ? 1 : 0); });
+      r.push(c.other_meds, c.remarks);
+      NEONATAL.forEach(function(o){ r.push(c[o.key] === true ? 1 : 0); });
+      r.push(c.neonatal_na?1:0, c.apo_neonatal?1:0);
+      return r;
+    });
+
+    var lines = [hdrs].concat(rows).map(function(r){
+      return r.map(esc).join(",");
+    });
+    var csv = lines.join("\n");
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv"}));
+    a.download = "ogtt_cases_" + new Date().toISOString().slice(0,10) + ".csv";
+    a.click();
+  }
+
+  function renderData(){
+    if(!pwOk){
+      return h("div",{style:Object.assign({},ST.card,{textAlign:"center",padding:"40px 20px"})},
+        h("div",{style:{fontWeight:700,color:"#1F3864",fontSize:16,marginBottom:6}},
+          "Data Access - Password Required"),
+        h("div",{style:{fontSize:12,color:"#888",marginBottom:16}},
+          "Restricted to authorised researchers"),
+        h("input",{type:"password", value:pwInput, placeholder:"Enter password",
+          style:Object.assign({},ST.inp,{maxWidth:240,margin:"0 auto 12px",display:"block",textAlign:"center"}),
+          onChange:function(e){ setPwInput(e.target.value); },
+          onKeyDown:function(e){
+            if(e.key === "Enter"){
+              if(pwInput === DATA_PW){ setPwOk(true); } else { window.alert("Incorrect password"); }
+            }
+          }}),
+        h("button",{style:Object.assign({},btnS(),{display:"inline-block",minWidth:160}),
+          onClick:function(){
+            if(pwInput === DATA_PW){ setPwOk(true); } else { window.alert("Incorrect password"); }
+          }}, "Unlock")
+      );
+    }
+
+    var headers = ["n","Centre","Study ID","Date","Age","BMI","Par","GA","Cluster",
+      "GDM","Outcomes","Neonatal","Tx","Del"];
+
+    return h("div",{style:ST.card},
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",
+          marginBottom:12, flexWrap:"wrap", gap:8}},
+        h("div",{style:{fontWeight:700,color:"#1F3864",fontSize:14}},
+          "All Cases (n=" + cases.length + ")",
+          h("button",{style:{marginLeft:10,padding:"2px 8px",background:"#eee",border:"none",
+            borderRadius:5,fontSize:11,cursor:"pointer",color:"#888"},
+            onClick:function(){ setPwOk(false); setPwInput(""); }}, "Lock")
+        ),
+        h("button",{onClick:exportCsv, style:btnS("#2E7D32",true,false)}, "Export CSV")
+      ),
+      cases.length === 0
+        ? h("div",{style:{textAlign:"center",padding:24,color:"#aaa",fontSize:13}},"No cases yet.")
+        : h("div",{style:{overflowX:"auto"}},
+            h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11}},
+              h("thead", null,
+                h("tr",{style:{background:"#1F3864"}},
+                  headers.map(function(x){
+                    return h("th",{key:x, style:{padding:"7px 8px",color:"#fff",
+                      textAlign:"left", whiteSpace:"nowrap"}}, x);
+                  })
+                )
+              ),
+              h("tbody", null,
+                cases.map(function(c, i){
+                  var cl = C[c.cid];
+                  var matL = MATERNAL.filter(function(o){ return c[o.key]===true; })
+                                     .map(function(o){ return o.label; });
+                  var neoL = NEONATAL.filter(function(o){ return c[o.key]===true; })
+                                     .map(function(o){ return o.label; });
+                  var txL = TREATMENTS.filter(function(t){ return c[t.key]===true; })
+                                      .map(function(t){ return t.label; });
+                  var td = function(v, st){
+                    return h("td",{style:Object.assign({padding:"5px 8px"}, st||{})}, v);
+                  };
+                  return h("tr",{key:i, style:{background: i%2===0 ? "#FAFAFA" : "#fff"}},
+                    td(i+1, {color:"#aaa"}),
+                    td(c.centre || "-", {fontWeight:600}),
+                    td(c.pid || "-"),
+                    td(c.created_at ? c.created_at.slice(0,10) : "-", {color:"#888"}),
+                    td(c.age === null || c.age === undefined ? "-" : c.age),
+                    td(c.bmi === null || c.bmi === undefined ? "-" : c.bmi),
+                    td(c.parity === null || c.parity === undefined ? "-" : c.parity),
+                    td(c.ga_ogtt === null || c.ga_ogtt === undefined ? "-" : c.ga_ogtt),
+                    td(c.cluster, {fontWeight:700, color: cl ? cl.color : "#333"}),
+                    td(c.is_gdm===true ? "GDM" : (c.is_gdm===false ? "Non" : "-"),
+                       {color: c.is_gdm ? "#D4835A" : "#5E81A2", fontWeight:600}),
+                    td(matL.length ? matL.join(", ") : "pending",
+                       {color: matL.length ? "#B83232" : "#aaa"}),
+                    td(c.neonatal_na ? "N/A" : (neoL.length ? neoL.join(", ") : "-"),
+                       {color:"#E09B5A"}),
+                    td(txL.length ? txL.join(", ") : "-", {color:"#2E7D32"}),
+                    h("td",{style:{padding:"5px 8px"}},
+                      h("button",{onClick:function(){ deleteRow(c); },
+                        style:{background:"none",border:"none",color:"#B00020",
+                          cursor:"pointer",fontSize:14,fontWeight:700}}, "x")
+                    )
+                  );
+                })
+              )
+            )
+          )
+    );
+  }
+
+  // ---------- REFERENCE TAB ----------
+  function renderRef(){
+    return h("div", null,
+      h("div",{style:ST.card},
+        h("div",{style:{fontWeight:700,color:"#1F3864",fontSize:14,marginBottom:14}},"Cluster Reference"),
+        [0,1,2,3].map(function(cid){
+          var cl = C[cid];
+          return h("div",{key:cid, style:{marginBottom:16,borderLeft:"4px solid "+cl.color,paddingLeft:12}},
+            h("div",{style:{fontWeight:800,color:cl.color,fontSize:15}}, cl.name + " - " + cl.full),
+            h("div",{style:{fontSize:12,color:"#555",margin:"4px 0"}}, cl.profile),
+            h("div",{className:"g3", style:grid("1fr 1fr 1fr",8,0)},
+              [["FBS centroid", cl.fbs_r],["D1hr centroid", cl.d1_r],["D2hr centroid", cl.d2_r]]
+              .map(function(p){
+                return h("div",{key:p[0], style:{background:cl.bg,borderRadius:7,padding:"7px 9px"}},
+                  h("div",{style:{fontSize:10,color:"#555",fontWeight:600}}, p[0]),
+                  h("div",{style:{fontSize:14,fontWeight:800,color:cl.color}}, p[1] + " mg/dL")
+                );
+              })
+            )
+          );
+        })
+      ),
+      h("div",{style:Object.assign({},ST.card,{background:"#FFF8E1",border:"1.5px solid #E09B5A"})},
+        h("div",{style:{fontWeight:700,color:"#8B5000",fontSize:13,marginBottom:8}},"Data Security Notice"),
+        h("div",{style:{fontSize:12,color:"#5C3600",lineHeight:1.9}},
+          "This tool submits anonymised research data to a central database. No patient identifiers are collected. Use a study code, never a hospital number or a name.",
+          h("br"), h("br"),
+          "Individual records are not viewable or downloadable from this page. Only aggregate cluster statistics are shown in the Validate tab. Data export and any corrections are performed by the coordinating centre through the Supabase dashboard.")
+      ),
+      h("div",{style:Object.assign({},ST.card,{background:"#EBF2F8"})},
+        h("div",{style:{fontWeight:700,color:"#1F3864",fontSize:13,marginBottom:8}},"Composite Outcome Definitions"),
+        h("div",{style:{fontSize:12,color:"#444",lineHeight:1.9}},
+          h("b",null,"Frozen composites"), " - identical to the derivation cohort so predicted and observed rates remain comparable:", h("br"),
+          "APO Extended: any of HTN, Preterm, SGA, LGA, Fetal Distress, LSCS, Induction", h("br"),
+          "APO Strict: as above but excluding LSCS and Induction", h("br"),
+          "MCO: two or more of the seven APO Extended outcomes", h("br"), h("br"),
+          h("b",null,"Validation APO"), " - new composite, validation cohort only:", h("br"),
+          "Any of the seven maternal outcomes PLUS PPH, PROM, Instrumental delivery, Stillbirth or IUD.", h("br"),
+          "LSCS is counted only when a previous scar was NOT the sole indication.", h("br"), h("br"),
+          h("b",null,"APO Neonatal"), ": any of APGAR under 7 at 5 min, neonatal resuscitation, jaundice, NICU admission, neonatal mortality.", h("br"), h("br"),
+          h("b",null,"Note"), ": Stillbirth or IUD is a fetal death before delivery and is distinct from neonatal mortality, which follows a live birth.", h("br"), h("br"),
+          h("b",null,"Why the outcome set is deliberately limited"), h("br"),
+          "Composite outcomes act as surrogates rather than enumerating every complication. NICU admission captures respiratory distress, neonatal hypoglycaemia, sepsis, transient tachypnoea and jaundice requiring treatment. LGA captures macrosomia, shoulder dystocia risk and polyhydramnios. LSCS captures fetal distress, failed induction and cephalopelvic disproportion. APGAR below 7 captures perinatal asphyxia including meconium aspiration.", h("br"), h("br"),
+          "Adding individually rare complications would double-count events already detected by these composites while introducing variation in how each centre documents them. The Remarks field records anything genuinely outside this framework; it is reviewed qualitatively and is not counted in any composite."
+        )
+      ),
+      h("div",{style:Object.assign({},ST.card,{background:"#EBF2F8"})},
+        h("div",{style:{fontWeight:700,color:"#1F3864",fontSize:13,marginBottom:8}},"Data Quality Rules"),
+        h("div",{style:{fontSize:12,color:"#444",lineHeight:1.9}},
+          h("b", null, "Blocked, cannot save:"), h("br"),
+          "FBS below 50 or above 126 mg/dL (above 126 indicates overt diabetes)", h("br"),
+          "1hr glucose below 50 mg/dL", h("br"),
+          "2hr glucose below 50 mg/dL", h("br"),
+          "Birth weight below 500 g", h("br"),
+          "Parity negative or above 15", h("br"),
+          "Age below 10 or above 60 years", h("br"),
+          "BMI below 10 or above 70", h("br"),
+          "GA at OGTT outside 4 to 42 weeks", h("br"),
+          "GA at delivery outside 20 to 45 weeks", h("br"), h("br"),
+          h("b", null, "Warnings, allowed but please verify:"), h("br"),
+          "Age below 18 or above 40 years", h("br"),
+          "BMI below 18 or above 35", h("br"),
+          "GA at OGTT outside 10 to 36 weeks", h("br"),
+          "2hr glucose above 200 mg/dL", h("br"),
+          "Birth weight below 1000 g or above 4000 g", h("br"),
+          "GA at delivery outside 24 to 43 weeks"
+        )
+      ),
+      h("div",{style:Object.assign({},ST.card,{background:"#EBF2F8"})},
+        h("div",{style:{fontWeight:700,color:"#1F3864",fontSize:13,marginBottom:8}},"Assignment Method"),
+        h("div",{style:{fontSize:12,color:"#444",lineHeight:1.9}},
+          "Step 1. Delta1hr = 1hr minus FBS. Delta2hr = 2hr minus FBS.", h("br"),
+          "Step 2. Standardise. FBS_z = (FBS - 82.14) / 10.47. D1_z = (D1hr - 54.44) / 30.97. D2_z = (D2hr - 32.13) / 23.98.", h("br"),
+          "Step 3. Euclidean distance to each of the 4 centroids in standardised space.", h("br"),
+          "Step 4. Assign to the nearest centroid.", h("br"), h("br"),
+          "Training cohort: n=245 (GDM 59, Non-GDM 186), St Johns Medical College Hospital, Bengaluru.", h("br"),
+          "Algorithm: k-means, k=4, 100 initialisations, seed 42.", h("br"),
+          "Features: FBS, Delta1hr, Delta2hr."
+        )
+      )
+    );
+  }
+
+  // ---------- MAIN RENDER ----------
+  var statusTxt, statusCol;
+  if(CONFIGURED){
+    statusTxt = "Connected. " + (loading ? "loading" : (cases.length + " cases"));
+    statusCol = "#90EE90";
+  } else {
+    statusTxt = "Local mode";
+    statusCol = "#FFD700";
+  }
+
+  var body;
+  if(tab === "calc"){
+    body = h("div", null, renderCalcForm(), renderResult());
+  } else if(tab === "validate"){
+    body = renderValidate();
+  } else {
+    body = renderRef();
+  }
+
+  return h("div",{style:{maxWidth:820,margin:"0 auto"}},
+    h("div",{style:{background:"#1F3864",borderRadius:12,padding:"15px 18px",marginBottom:14}},
+      h("div",{style:{color:"#fff",fontSize:18,fontWeight:800}},"OGTT Cluster Calculator"),
+      h("div",{style:{color:"#B0C8F0",fontSize:11,marginTop:4}},
+        "St Johns Medical College Hospital. GDM Phenotyping Study, n=245. ",
+        h("span",{style:{color:statusCol}}, statusTxt)
+      )
+    ),
+    h("div",{style:{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}},
+      [["calc","Assign"],["validate","Validate"],["ref","Reference"]]
+      .map(function(p){
+        return h("button",{key:p[0], style:tabS(tab===p[0]),
+          onClick:function(){ setTab(p[0]); }}, p[1]);
+      })
+    ),
+    body,
+    h("div",{style:{textAlign:"center",fontSize:10,color:"#aaa",padding:"10px 0"}},
+      "St Johns Medical College Hospital. Endocrinology. GDM Phenotyping Study. Research use only.")
+  );
+}
+
+function ErrBoundary(props){
+  var st = useState(null), e = st[0], setE = st[1];
+  useEffect(function(){
+    function onErr(ev){ setE(ev.message || String(ev.error) || "Unknown error"); }
+    window.addEventListener("error", onErr);
+    return function(){ window.removeEventListener("error", onErr); };
+  }, []);
+  if(e){
+    return h("div",{style:{maxWidth:700,margin:"40px auto",background:"#fff",borderRadius:12,
+        padding:"24px",border:"2px solid #B00020"}},
+      h("div",{style:{fontWeight:800,color:"#B00020",fontSize:18,marginBottom:10}},"Something went wrong"),
+      h("pre",{style:{background:"#FFF0F0",padding:"12px",borderRadius:8,fontSize:11,
+        color:"#B00020",whiteSpace:"pre-wrap",wordBreak:"break-word"}}, String(e)),
+      h("button",{onClick:function(){ window.location.reload(); },
+        style:{marginTop:14,padding:"10px 18px",background:"#1F3864",color:"#fff",
+          border:"none",borderRadius:8,fontWeight:700,cursor:"pointer"}}, "Reload page")
+    );
+  }
+  return props.children;
+}
+
+var rootEl = document.getElementById("root");
+ReactDOM.createRoot(rootEl).render(h(ErrBoundary, null, h(App)));
+
+</script>
+</body>
+</html>
